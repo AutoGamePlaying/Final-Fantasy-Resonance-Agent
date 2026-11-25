@@ -1,0 +1,7 @@
+lib/
+build/
+node_modules/
+.deps/
+package-lock.json
+# Hand-written docs: prettier pads CJK tables into unreadable raw text
+*.md

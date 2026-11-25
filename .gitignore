@@ -1,0 +1,11 @@
+node_modules/
+lib/
+build/
+.deps/
+/CLAUDE.md
+/AGENTS.md
+machine/machine.env
+tools/**/bin/
+tools/**/obj/
+target/
+/tasks/
