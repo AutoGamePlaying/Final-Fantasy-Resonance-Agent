@@ -5,6 +5,7 @@
 //! without silently passing Japanese source text off as Chinese), and provides typed queries for
 //! Scenario tables (`DT_ChapterData`, `DT_MainScenario`).
 
+pub mod assets;
 pub mod battle;
 pub mod datatable;
 pub mod error;
