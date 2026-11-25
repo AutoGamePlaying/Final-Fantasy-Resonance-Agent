@@ -5,3 +5,5 @@ node_modules/
 package-lock.json
 # Hand-written docs: prettier pads CJK tables into unreadable raw text
 *.md
+# Intentionally malformed fixture for parse-failure tests
+test/fixtures/db/input_ui/export-full/FFRS/Content/BP/BP_Mock_Broken.json
