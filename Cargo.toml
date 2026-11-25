@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/ffr-data",
+    "crates/ffr-db",
     "crates/ffr-module",
 ]
 
@@ -14,6 +15,7 @@ license = "MIT"
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
