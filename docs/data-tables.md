@@ -1,6 +1,6 @@
 # R2 数据表结构说明
 
-本文记录通过 `tools/ffr-export/run.sh export --prefix FFRS/Content/Datatable/` 导出的 JSON 结构（对应 `docs/plan.md` §3 R2），由只读统计命令 `node src/host/cli/data-survey.ts` 核对得出。所有游戏数据文件留在 `.deps/ffr/export/`，不进版本库；本文只描述路径、类型、行数、字段名与表间关联，不包含游戏正文内容。
+本文记录通过独立仓库 [final-fantasy-resonance-export](https://github.com/AutoGamePlaying/final-fantasy-resonance-export)（`FFR_DEPS="$PWD/.deps" ../final-fantasy-resonance-export/scripts/run.sh export --prefix FFRS/Content/Datatable/`）导出的 JSON 结构（对应 `docs/plan.md` §3 R2），由只读统计命令 `node src/host/cli/data-survey.ts` 核对得出。所有游戏数据文件留在 `.deps/ffr/export/`，不进版本库；本文只描述路径、类型、行数、字段名与表间关联，不包含游戏正文内容。
 
 ## 一、导出总览与文件格式
 
@@ -185,7 +185,7 @@ flowchart LR
   - 870 张 `StringTable` 共 29296 条词条（仅源语言日文 `ja`）：含假名 22510 条、纯汉字 1804 条、ASCII/符号 742 条、空串 4240 条（非空词条 25056 条）。
   - `FFRS/Content/L10N/` 下仅存放多语言 UI 贴图（`de`、`en`、`Es`、`Fr`、`ja`、`ko`、`zh-Hans`、`zh-Hant`）与语音/影片（`en`、`ja`），不含文本表。
   - 多语言文本位于游戏包 `FFRS/Content/Localization/Game/<lang>/Game.locres`（`Game.locmeta` 声明 `NativeCulture = ja`，共 9 种已编译语言：`de`、`en`、`es`、`fr`、`is`、`ja`、`ko`、`zh-Hans`、`zh-Hant`；另含 `DebugMenu/` 下的 7 种语言）。
-  - 运行 `tools/ffr-export/run.sh locres` 可导出到 `.deps/ffr/export/Localization/<lang>.json`（默认 `zh-Hans`、`en`、`ja`，格式 `{ namespace: { key: text } }`），并写出 `Localization/manifest.json`（记录语言、命名空间数、条数与源文件 SHA-256）。
+  - 运行 `FFR_DEPS="$PWD/.deps" ../final-fantasy-resonance-export/scripts/run.sh locres` 可导出到 `.deps/ffr/export/Localization/<lang>.json`（默认 `zh-Hans`、`en`、`ja`，格式 `{ namespace: { key: text } }`），并写出 `Localization/manifest.json`（记录语言、命名空间数、条数与源文件 SHA-256）。
 - **对应与查找规则**：
   - **字符串表引用**：`StringTable.TableNamespace`（870 张表均与资源名一致）+ `Key`，与 `Game.locres` 的 `namespace` + `key` 一一对应。
   - **无 `TableId` 内联文本**：直接使用 `FText` 的 `Namespace` + `Key` 查 `Game.locres`。
@@ -407,4 +407,15 @@ flowchart LR
 - `Map/CDT_MapData_Prod.facilityDataList` 仅在 6 座城镇上记录设施类型枚举（`eMapInteractType::Shop*` / `Inn`），不含 `ShopID`；
 - `Map/NPC/DT_*.json`（116 张表，`MAP_PLACEMENT_MAP_UNIT_ID`）仅列出各图摆放的 `MapUnitId`，不含商店组件配置；
 - `Event/TalkEvent/CDT_TalkEventData_Prod` 中商店交互事件的 `ArgList.id` 为对话脚本编号（`TalkId`），与 `DT_ShopList.ShopID` 并非同一编号体系；
-- 实际的 `ShopEntry.ShopID` 与 `InnEntry.InnID` 是摆放于城镇关卡 `*_EV.umap` 中的 NPC Actor 实例属性，不在 `Datatable/` 导出范围内。因此离线地图查询仅能标注设施类型，进图后由 `FfrBridge` v1 从实时场景读取 `field.transitions_and_npcs.npcs[].shop_id` / `inn_id`。
+- 实际的 `ShopEntry.ShopID` 与 `InnEntry.InnID` 是摆放于城镇关卡 `*_EV.umap` 中的 NPC Actor 实例属性，不在 `Datatable/` 导出范围内。因此离线地图查询仅能标注设施类型，进图后由 `FfrBridge` v1 从实时场景读取 `field.transitions_and_npcs.npcs[].shop_id` / `inn_id`（全量关卡提取后的离线映射见下文 §八）。
+
+## 八、关卡数据
+
+关卡 JSON（`<关卡名>.json`）与地图连通图谱（`_graph.json`）由独立仓库 [final-fantasy-resonance-export](https://github.com/AutoGamePlaying/final-fantasy-resonance-export) 的 `export-maps` 子命令从游戏包 `.umap` 提取，默认放在 `$FFR_DEPS/ffr/export-full/maps/`，不进版本库。
+
+本地数据库的关卡区域（`crates/ffr-db/src/build/levels.rs`，对应 `docs/database.md`）按以下字段入库：
+
+- 单关卡 `<关卡名>.json`：读取 `level`（`name`、`outputFile`、`path`、`packagePath`、`sublevelType`、`persistentLevel`、`mapId`/`mapIds`）写入 `level`、`level_map`；读取 `actors[]`（`name`、`label`、`class`、`isGameClass`、`location`/`rotation`/`scale`、`properties`/`assetRefs`/`subobjects` 及组件包围盒）写入 `actor`、`actor_rtree`；读取 `summary` 的 10 类对象清单（`mapUnits`、`treasureBoxes`、`eventTriggers`、`transitions`、`transitionPoints`、`savePoints`、`shops`、`inns`、`gimmicks`、`encounterZones`）写入 `level_object`、`transition_point`、`map_shop`。
+- 地图图谱 `_graph.json`：读取各图 `exits[]`（`sourceLevel`、`actorName`、`uniqueId`、`kind`、`targetMapId`/`targetPointId`、`isSameMap`/`isAutoTransition`/`isEventOnly`、`condition`、`location`）写入 `map_edge`。
+
+子关卡类型统计、提取过滤策略与完整字段格式见 [final-fantasy-resonance-export/docs/maps.md](https://github.com/AutoGamePlaying/final-fantasy-resonance-export/blob/main/docs/maps.md)。

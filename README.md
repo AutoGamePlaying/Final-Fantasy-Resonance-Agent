@@ -82,36 +82,49 @@ node src/host/cli/dump-status.ts [--dry-run]
 
 ### R2 数据导出
 
-`tools/ffr-export/run.sh` 可列出游戏资源、保存原始包字节，并在取得 R1 的 `.usmap` 后导出 JSON。安装方法、三个子命令和输出约定见 [tools/ffr-export/README.md](tools/ffr-export/README.md)。
+游戏资源盘点、数据包导出、多语言文本（`locres`）和关卡提取已移至独立仓库 [final-fantasy-resonance-export](https://github.com/AutoGamePlaying/final-fantasy-resonance-export)（同级目录 `../final-fantasy-resonance-export`）。.NET 运行环境准备、各子命令用法与输出约定见该仓库的 `README.md`、`docs/data-inventory.md` 和 `docs/maps.md`。
+
+通过环境变量 `FFR_DEPS` 指定输出根路径（目录布局与本仓库 `.deps/` 一致）：
+
+```bash
+FFR_DEPS="$PWD/.deps" ../final-fantasy-resonance-export/scripts/run.sh export --prefix FFRS/Content/Datatable/ --usmap …
+```
 
 ## Rust 工作区与 AGP 游戏模块
 
-仓库根目录是 Cargo workspace（`Cargo.toml`、`Cargo.lock` 与 `target/` 均在根目录），包含两个成员 crate：
+仓库根目录是 Cargo workspace（`Cargo.toml`、`Cargo.lock` 与 `target/` 均在根目录），包含三个成员 crate：
 
-- `crates/ffr-data`：离线游戏数据层，按需加载并缓存 `.deps/ffr/export/`（或 `$FFR_DEPS/ffr/export`）中的 `DataTable` / `CompositeDataTable`、`StringTable` 与 `Localization/<lang>.json`，提供语言感知的 `FText` 解析（默认 `zh-Hans`，缺失时不把日文冒充中文）以及章节、主线剧情的类型化查询。
-- `crates/ffr-module`：独立的 AGP 外部游戏模块（工具集版本 `ffr-1`），通过 JSON-RPC 由 AGP 启动，经文件桥读取 `FfrBridge` 状态（`game_status`、`bridge_ping`），并提供离线游戏数据查询工具（`read_chapter`、`read_map`、`read_enemy`、`read_battle_group`、`read_skill`、`read_item`、`read_quest`、`read_shop`、`search_data`）与分页只读资源（`ffr://chapters`、`ffr://maps`、`ffr://enemies`、`ffr://skills`）。
+- `crates/ffr-data`：离线游戏数据层，按需加载并缓存 `.deps/ffr/export/`（或 `$FFR_DEPS/ffr/export`）中的 `DataTable` / `CompositeDataTable`、`StringTable` 与 `Localization/<lang>.json`，提供语言感知的 `FText` 解析（默认 `zh-Hans`，缺失时不把日文冒充中文）以及章节、主线剧情、战斗与世界表的类型化查询。
+- `crates/ffr-db`：本地 SQLite 游戏数据库与只读 API（`GameDb`）以及命令行工具 `ffr-db`（`build`、`stats`、`sql`、`explain`、`bench`），将导出数据打包进单个 SQLite 文件，设计见 [docs/database.md](docs/database.md)。
+- `crates/ffr-module`：独立的 AGP 外部游戏模块（工具集版本 `ffr-3`），通过 JSON-RPC 由 AGP 启动，经文件桥读取 `FfrBridge` 实时状态与只读命令（`game_status`、`bridge_ping`、`read_game_state`、`read_save_slots`、`read_inventory`、`read_event_flags`、`read_input_state`、`query_nav_path`），并经 `ffr-db` 数据库提供全量静态游戏数据查询工具（`read_chapter`、`read_map`、`read_enemy`、`read_battle_group`、`read_skill`、`read_item`、`read_quest`、`read_shop`、`search_data`、`find_route`、`where_to_get`、`read_npc`、`read_talk`、`whats_near`、`query_game_db`）与分页只读资源（`ffr://chapters`、`ffr://maps`、`ffr://enemies`、`ffr://skills`、`ffr://db/schema`）。
 
-开发和检查需要 Rust 工具链；在仓库根目录运行整个 workspace 的检查（`cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`）与 Windows 交叉编译：
+开发和检查需要 Rust 工具链；在仓库根目录构建本地数据库、运行 workspace 检查与 Windows 交叉编译：
 
 ```bash
+# 构建游戏数据库（默认读取 $FFR_DEPS/ffr/{export,export-full,inventory,export-full/maps}，
+# 默认输出到 $FFR_DEPS/ffr/db/ffr.sqlite；部署给游戏机时不要带 --snapshots）
+FFR_DEPS=.deps cargo run --release -p ffr-db -- build
+
+# 性能验收与检查
+FFR_DEPS=.deps cargo run --release -p ffr-db -- bench
 ./scripts/check-rust.sh
-cargo xwin build --release --target x86_64-pc-windows-msvc -p ffr-module
+cargo xwin build --release --target x86_64-pc-windows-msvc -p ffr-module -p ffr-db
 ```
 
-产物是 `target/x86_64-pc-windows-msvc/release/ffr-module.exe`。游戏机上除可执行文件外，还需将开发机导出的游戏数据目录（即 `<FFR_DEPS>/ffr/export`，至少包含 `FFRS/Content/Datatable/` 与 `Localization/zh-Hans.json`）单独拷贝部署到游戏机，再在 AGP 运行配置的 `[module]` 段填写：
+交叉编译产物在 `target/x86_64-pc-windows-msvc/release/`（`ffr-module.exe` 与 `ffr-db.exe`）。部署到游戏机时，只需复制 `ffr-module.exe` 和开发机构建好的单个数据库文件 `ffr.sqlite`（构建时不要传 `--snapshots`，不包含开发机实机快照），再在 AGP 运行配置的 `[module]` 段填写：
 
 ```toml
 [module]
 command = "C:/path/to/ffr-module.exe"
 args = [
   "--game-dir", "D:/Games/FFRS/Win64",
-  "--data-dir", "C:/path/to/ffr-export",
+  "--db", "C:/path/to/ffr.sqlite",
 ]
 default_timeout_secs = 15
 ```
 
 - `--game-dir` 也可由环境变量 `FFR_GAME_DIR` 提供；文件桥默认是 `<game-dir>/ue4ss/ffr-out/bridge`，需要单独指定时改用 `--bridge-dir`。
-- `--data-dir` 默认取环境变量 `FFR_DEPS` 下的 `ffr/export`。如果数据目录未指定或不存在，模块仍可正常启动，状态类工具（`game_status`、`bridge_ping`）不受影响，数据类工具会返回 `is_error` 与中文说明。
+- `--db` 默认取环境变量 `FFR_DEPS` 下的 `ffr/db/ffr.sqlite`；数据类工具优先读取数据库，仅在显式传入 `--data-dir` 且未传入 `--db` 时回退到旧导出目录路径，两个参数不能同时指定。数据库不存在或版本不兼容时，模块仍可正常启动，状态类工具不受影响，数据类工具会返回 `is_error` 与中文构建提示。
 - 游戏程序名可用 `--exe` 覆盖，默认是 `FFRS-Win64-Shipping.exe`。
 
 ## 许可证和声明
