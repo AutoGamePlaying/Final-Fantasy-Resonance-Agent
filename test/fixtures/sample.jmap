@@ -1,0 +1,372 @@
+{
+  "metadata": {
+    "tool": "SampleJMapFixture",
+    "timestamp": "2026-01-01T00:00:00Z",
+    "source": "SampleGame-Win64-Shipping.exe",
+    "engine_version": {
+      "major": 5,
+      "minor": 6
+    },
+    "build_change_list": "0"
+  },
+  "image_base_address": "0x140000000",
+  "engine_offsets": {
+    "guobject_array": "0x140001000"
+  },
+  "objects": {
+    "/Script/Engine.Actor": {
+      "type": "Class",
+      "outer": "/Script/Engine",
+      "class": "/Script/CoreUObject.Class",
+      "super_struct": "/Script/CoreUObject.Object",
+      "children": [],
+      "properties": [
+        {
+          "name": "IgnoredEngineProp",
+          "offset": 16,
+          "array_dim": 1,
+          "size": 4,
+          "type": "IntProperty"
+        }
+      ]
+    },
+    "/Script/mucha": {
+      "type": "Package",
+      "outer": null,
+      "class": "/Script/CoreUObject.Package",
+      "children": []
+    },
+    "/Script/mucha.Default__CPP_SamplePartySubsystem": {
+      "type": "Object",
+      "outer": "/Script/mucha",
+      "class": "/Script/mucha.CPP_SamplePartySubsystem",
+      "property_values": {
+        "Note": "escaped \"quote\" and {braces} inside string"
+      }
+    },
+    "/Script/mucha.CPP_SamplePartySubsystem": {
+      "type": "Class",
+      "outer": "/Script/mucha",
+      "class": "/Script/CoreUObject.Class",
+      "super_struct": "/Script/Engine.GameInstanceSubsystem",
+      "children": [
+        "/Script/mucha.CPP_SamplePartySubsystem:GetActiveParty"
+      ],
+      "properties": [
+        {
+          "name": "Gil",
+          "offset": 64,
+          "array_dim": 1,
+          "size": 4,
+          "type": "IntProperty"
+        },
+        {
+          "name": "Members",
+          "offset": 48,
+          "array_dim": 1,
+          "size": 16,
+          "type": "ArrayProperty",
+          "inner": {
+            "name": "Members",
+            "offset": 0,
+            "array_dim": 1,
+            "size": 32,
+            "type": "StructProperty",
+            "struct": "/Script/mucha.SampleMemberStatus"
+          }
+        },
+        {
+          "name": "MemberLookup",
+          "offset": 72,
+          "array_dim": 1,
+          "size": 80,
+          "type": "MapProperty",
+          "key_prop": {
+            "name": "MemberLookup",
+            "offset": 0,
+            "array_dim": 1,
+            "size": 8,
+            "type": "NameProperty"
+          },
+          "value_prop": {
+            "name": "MemberLookup_Value",
+            "offset": 8,
+            "array_dim": 1,
+            "size": 8,
+            "type": "WeakObjectProperty",
+            "property_class": "/Script/mucha.CPP_SampleFieldPawn"
+          }
+        }
+      ]
+    },
+    "/Script/mucha.CPP_SamplePartySubsystem:GetActiveParty": {
+      "type": "Function",
+      "outer": "/Script/mucha.CPP_SamplePartySubsystem",
+      "class": "/Script/CoreUObject.Function",
+      "properties": []
+    },
+    "/Script/mucha.CPP_SamplePartySubsystem:IsPartyFull": {
+      "type": "Function",
+      "outer": "/Script/mucha.CPP_SamplePartySubsystem",
+      "class": "/Script/CoreUObject.Function",
+      "properties": []
+    },
+    "/Script/mucha.CPP_SampleBattleManager": {
+      "type": "Class",
+      "outer": "/Script/mucha",
+      "class": "/Script/CoreUObject.Class",
+      "super_struct": "/Script/CoreUObject.Object",
+      "children": [
+        "/Script/mucha.CPP_SampleBattleManager:AdvanceTurn"
+      ],
+      "properties": [
+        {
+          "name": "TurnNumber",
+          "offset": 40,
+          "array_dim": 1,
+          "size": 4,
+          "type": "IntProperty"
+        },
+        {
+          "name": "Phase",
+          "offset": 44,
+          "array_dim": 1,
+          "size": 1,
+          "type": "EnumProperty",
+          "enum": "/Script/mucha.ESampleBattlePhase"
+        },
+        {
+          "name": "TargetSlot",
+          "offset": 45,
+          "array_dim": 1,
+          "size": 1,
+          "type": "ByteProperty",
+          "enum": "/Script/mucha.ESampleBattlePhase"
+        },
+        {
+          "name": "ActorOrder",
+          "offset": 48,
+          "array_dim": 4,
+          "size": 4,
+          "type": "IntProperty"
+        }
+      ]
+    },
+    "/Script/mucha.CPP_SampleFieldPawn": {
+      "type": "Class",
+      "outer": "/Script/mucha",
+      "class": "/Script/CoreUObject.Class",
+      "super_struct": "/Script/Engine.Character",
+      "children": [],
+      "properties": [
+        {
+          "name": "bIsDashing",
+          "offset": 120,
+          "array_dim": 1,
+          "size": 1,
+          "type": "BoolProperty"
+        }
+      ]
+    },
+    "/Script/mucha.CPP_SampleMapTransition": {
+      "type": "Class",
+      "outer": "/Script/mucha",
+      "class": "/Script/CoreUObject.Class",
+      "super_struct": "/Script/Engine.GameInstanceSubsystem",
+      "children": [],
+      "properties": [
+        {
+          "name": "CurrentLevel",
+          "offset": 48,
+          "array_dim": 1,
+          "size": 40,
+          "type": "SoftObjectProperty",
+          "property_class": "/Script/Engine.World"
+        }
+      ]
+    },
+    "/Script/mucha.CPP_SampleDialogRunner": {
+      "type": "Class",
+      "outer": "/Script/mucha",
+      "class": "/Script/CoreUObject.Class",
+      "super_struct": "/Script/CoreUObject.Object",
+      "children": [],
+      "properties": [
+        {
+          "name": "ChoiceLabels",
+          "offset": 48,
+          "array_dim": 1,
+          "size": 16,
+          "type": "ArrayProperty",
+          "inner": {
+            "name": "ChoiceLabels",
+            "offset": 0,
+            "array_dim": 1,
+            "size": 16,
+            "type": "TextProperty"
+          }
+        }
+      ]
+    },
+    "/Script/mucha.CPP_SampleShopController": {
+      "type": "Class",
+      "outer": "/Script/mucha",
+      "class": "/Script/CoreUObject.Class",
+      "super_struct": "/Script/CoreUObject.Object",
+      "children": [],
+      "properties": [
+        {
+          "name": "StockIds",
+          "offset": 48,
+          "array_dim": 1,
+          "size": 80,
+          "type": "SetProperty",
+          "key_prop": {
+            "name": "StockIds",
+            "offset": 0,
+            "array_dim": 1,
+            "size": 8,
+            "type": "NameProperty"
+          }
+        }
+      ]
+    },
+    "/Script/mucha.CPP_SampleStoryFlagManager": {
+      "type": "Class",
+      "outer": "/Script/mucha",
+      "class": "/Script/CoreUObject.Class",
+      "super_struct": "/Script/Engine.GameInstanceSubsystem",
+      "children": [],
+      "properties": [
+        {
+          "name": "ChapterId",
+          "offset": 48,
+          "array_dim": 1,
+          "size": 4,
+          "type": "IntProperty"
+        }
+      ]
+    },
+    "/Script/mucha.CPP_SampleSaveGame": {
+      "type": "Class",
+      "outer": "/Script/mucha",
+      "class": "/Script/CoreUObject.Class",
+      "super_struct": "/Script/Engine.SaveGame",
+      "children": [],
+      "properties": [
+        {
+          "name": "SlotIndex",
+          "offset": 40,
+          "array_dim": 1,
+          "size": 4,
+          "type": "IntProperty"
+        }
+      ]
+    },
+    "/Script/mucha.CPP_SampleInputRegistrant": {
+      "type": "Class",
+      "outer": "/Script/mucha",
+      "class": "/Script/CoreUObject.Class",
+      "super_struct": "/Script/Engine.GameInstanceSubsystem",
+      "children": [],
+      "properties": [
+        {
+          "name": "ActiveContexts",
+          "offset": 48,
+          "array_dim": 1,
+          "size": 16,
+          "type": "ArrayProperty",
+          "inner": {
+            "name": "ActiveContexts",
+            "offset": 0,
+            "array_dim": 1,
+            "size": 8,
+            "type": "ObjectProperty",
+            "property_class": "/Script/EnhancedInput.InputMappingContext"
+          }
+        }
+      ]
+    },
+    "/Script/mucha.SampleMemberStatus": {
+      "type": "ScriptStruct",
+      "outer": "/Script/mucha",
+      "class": "/Script/CoreUObject.ScriptStruct",
+      "super_struct": "/Script/Engine.TableRowBase",
+      "properties": [
+        {
+          "name": "Hp",
+          "offset": 8,
+          "array_dim": 1,
+          "size": 4,
+          "type": "IntProperty"
+        },
+        {
+          "name": "Mp",
+          "offset": 12,
+          "array_dim": 1,
+          "size": 4,
+          "type": "IntProperty"
+        }
+      ]
+    },
+    "/Script/mucha.ESampleBattlePhase": {
+      "type": "Enum",
+      "outer": "/Script/mucha",
+      "class": "/Script/CoreUObject.Enum",
+      "cpp_type": "ESampleBattlePhase",
+      "names": [
+        ["ESampleBattlePhase::Start", 0],
+        ["ESampleBattlePhase::Command", 1],
+        ["ESampleBattlePhase::End", 2]
+      ]
+    },
+    "/Game/UI/Menu/WBP_SampleMainMenu.WBP_SampleMainMenu_C": {
+      "type": "Class",
+      "outer": "/Game/UI/Menu/WBP_SampleMainMenu",
+      "class": "/Script/UMG.WidgetBlueprintGeneratedClass",
+      "super_struct": "/Script/UMG.UserWidget",
+      "properties": [
+        {
+          "name": "CursorIndex",
+          "offset": 720,
+          "array_dim": 1,
+          "size": 4,
+          "type": "IntProperty"
+        },
+        {
+          "name": "EntryClass",
+          "offset": 728,
+          "array_dim": 1,
+          "size": 8,
+          "type": "ClassProperty",
+          "property_class": "/Script/CoreUObject.Class",
+          "meta_class": "/Script/UMG.UserWidget"
+        }
+      ]
+    },
+    "/Game/BP/Field/BP_SampleFieldHero.BP_SampleFieldHero_C": {
+      "type": "Class",
+      "outer": "/Game/BP/Field/BP_SampleFieldHero",
+      "class": "/Script/Engine.BlueprintGeneratedClass",
+      "super_struct": "/Script/mucha.CPP_SampleFieldPawn",
+      "properties": [
+        {
+          "name": "MoveSpeedScale",
+          "offset": 160,
+          "array_dim": 1,
+          "size": 8,
+          "type": "DoubleProperty"
+        }
+      ]
+    },
+    "/Game/BP/Field/BP_SampleFieldHero.Default__BP_SampleFieldHero_C": {
+      "type": "Object",
+      "outer": "/Game/BP/Field/BP_SampleFieldHero",
+      "class": "/Game/BP/Field/BP_SampleFieldHero.BP_SampleFieldHero_C",
+      "property_values": {}
+    }
+  },
+  "vtables": {
+    "0x140002000": ["0x140003000"]
+  }
+}
