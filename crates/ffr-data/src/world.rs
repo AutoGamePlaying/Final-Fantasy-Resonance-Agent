@@ -11,6 +11,7 @@ mod parse;
 mod quests;
 mod shops;
 mod summary;
+pub mod talk;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -54,6 +55,14 @@ pub use shops::{
 pub use summary::{
     item_effect_overview, item_summary, main_objective_summary, map_summary, quest_summary,
     shop_summary,
+};
+pub use talk::{
+    OrderedDataTableRows, TALK_EVENT_DATA_TABLE, TALK_EVENT_ROW_STRUCT, TALK_LINE_ROW_STRUCT,
+    TalkCustomChoiceDialog, TalkCustomChoiceItemCondition, TalkEvent, TalkEventArg,
+    TalkEventChoiceBranch, TalkEventTransition, TalkLine, is_developer_asset_path,
+    load_ordered_datatable_rows, load_talk_events, normalize_ue_asset_path,
+    parse_ordered_datatable_json, parse_talk_event_row, parse_talk_events,
+    parse_talk_lines_ordered, talk_table_relative_path,
 };
 
 /// Components needed to assemble a [`WorldData`] facade without reading from disk.
