@@ -3,11 +3,14 @@
 //! Exposes read-only process, window, and FfrBridge v1 live-state/command tools (`game_status`,
 //! `bridge_ping`, `read_game_state`, `read_save_slots`, `read_inventory`, `read_event_flags`,
 //! `read_input_state`, `query_nav_path`) alongside static game-data lookup tools (`read_*`,
-//! `search_data`) and paginated read-only catalog resources (`ffr://*`).
+//! `search_data`, `find_route`, `where_to_get`, `whats_near`, `query_game_db`) and paginated
+//! read-only catalog/schema resources (`ffr://*`).
 
 mod bridge_commands;
 mod data_cache;
 mod data_tools;
+mod data_tools_db;
+mod data_tools_ffr3;
 mod input_tools;
 mod resources;
 mod state_tools;
@@ -24,21 +27,22 @@ use agp_platform::{FileChannel, FileChannelOptions, PlatformError, process, wind
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::data_cache::GameDataCache;
+use crate::data_cache::GameDataSource;
 pub use crate::input_tools::{INPUT_SWITCH_FILE, remove_input_switch_blocking};
 
 /// Stable toolset version identifier reported during `initialize`.
-pub const TOOLSET_VERSION: &str = "ffr-2";
+pub const TOOLSET_VERSION: &str = "ffr-3";
 
-/// FFR AGP game module backed by the UE4SS file bridge and optional exported game data.
-/// Read-only by default; opt-in input injection tools (`press`, `move`) are exposed only when
-/// [`FfrModule::with_enable_input`] is enabled.
+/// FFR AGP game module backed by the UE4SS file bridge and static game data (`ffr-db` SQLite
+/// database by default, or legacy exported JSON directory). Read-only by default; opt-in input
+/// injection tools (`press`, `move`) are exposed only when [`FfrModule::with_enable_input`] is
+/// enabled.
 #[derive(Debug)]
 pub struct FfrModule {
     bridge_dir: PathBuf,
     channel: FileChannel,
     exe_name: String,
-    data: GameDataCache,
+    data: GameDataSource,
     reveal_hidden_weaknesses: bool,
     enable_input: bool,
 }
@@ -58,20 +62,32 @@ impl FfrModule {
             channel: FileChannel::new(bridge_dir.clone(), options),
             bridge_dir,
             exe_name: exe_name.into(),
-            data: GameDataCache::new(None),
+            data: GameDataSource::db(None),
             reveal_hidden_weaknesses: false,
             enable_input: false,
         }
     }
 
-    /// Attach an optional CUE4Parse export directory (`<deps>/ffr/export`) for data tools and
-    /// paginated resources. Missing directories never prevent module startup.
-    pub fn with_data_dir(mut self, data_dir: Option<PathBuf>) -> Self {
-        self.data = GameDataCache::new(data_dir);
+    /// Attach an optional `ffr-db` SQLite database path for data tools, paginated resources, and
+    /// live-state enrichment. Missing or incompatible databases never prevent module startup.
+    pub fn with_db_path(mut self, db_path: Option<PathBuf>) -> Self {
+        self.data = GameDataSource::db(db_path);
         self
     }
 
-    /// Attach an explicit CUE4Parse export directory.
+    /// Attach an explicit `ffr-db` SQLite database file path.
+    pub fn with_db(self, db_path: impl Into<PathBuf>) -> Self {
+        self.with_db_path(Some(db_path.into()))
+    }
+
+    /// Attach an optional CUE4Parse export directory (`<deps>/ffr/export`) using the legacy JSON
+    /// reference backend. Missing directories never prevent module startup.
+    pub fn with_data_dir(mut self, data_dir: Option<PathBuf>) -> Self {
+        self.data = GameDataSource::json(data_dir);
+        self
+    }
+
+    /// Attach an explicit CUE4Parse export directory (legacy JSON reference backend).
     pub fn with_export_dir(self, data_dir: impl Into<PathBuf>) -> Self {
         self.with_data_dir(Some(data_dir.into()))
     }
@@ -232,7 +248,7 @@ impl GameModule for FfrModule {
                     .await,
             ),
             other if data_tools::is_data_tool(other) => {
-                Ok(data_tools::call_data_tool(&self.data, other, args))
+                Ok(data_tools::call_data_tool(&self.channel, &self.data, other, args).await)
             }
             other if self.enable_input && input_tools::is_input_tool(other) => {
                 Ok(input_tools::call_input_tool(&self.channel, other, args, ctx).await)

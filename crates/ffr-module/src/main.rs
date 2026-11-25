@@ -19,7 +19,11 @@ struct Args {
     #[arg(long, value_name = "目录")]
     bridge_dir: Option<PathBuf>,
 
-    /// 游戏数据导出目录；默认取环境变量 FFR_DEPS 下的 ffr/export
+    /// 本地 SQLite 游戏数据库文件；默认取环境变量 FFR_DEPS 下的 ffr/db/ffr.sqlite
+    #[arg(long, value_name = "数据库文件")]
+    db: Option<PathBuf>,
+
+    /// 游戏数据导出目录（旧版 JSON 路径，仅在未指定 --db 且显式传入时使用）
     #[arg(long, value_name = "导出目录")]
     data_dir: Option<PathBuf>,
 
@@ -63,14 +67,23 @@ async fn main() -> anyhow::Result<()> {
                 anyhow!("没有指定桥目录：请使用 --game-dir、环境变量 FFR_GAME_DIR 或 --bridge-dir")
             })?,
     };
-    let data_dir = args
-        .data_dir
-        .or_else(|| ffr_data::export_dir_from_env().ok());
-
-    let module = FfrModule::new(bridge_dir.clone(), args.exe)
-        .with_data_dir(data_dir)
-        .with_reveal_hidden_weaknesses(args.reveal_hidden_weaknesses)
-        .with_enable_input(args.enable_input);
+    let module = match (args.db, args.data_dir) {
+        (Some(_), Some(_)) => {
+            return Err(anyhow!(
+                "参数冲突：--db 与 --data-dir 不能同时指定，请二选一（默认优先使用数据库 $FFR_DEPS/ffr/db/ffr.sqlite）"
+            ));
+        }
+        (Some(db_path), None) => FfrModule::new(bridge_dir.clone(), args.exe).with_db(db_path),
+        (None, Some(data_dir)) => {
+            FfrModule::new(bridge_dir.clone(), args.exe).with_data_dir(Some(data_dir))
+        }
+        (None, None) => {
+            let default_db = ffr_db::default_db_path_from_env().ok();
+            FfrModule::new(bridge_dir.clone(), args.exe).with_db_path(default_db)
+        }
+    }
+    .with_reveal_hidden_weaknesses(args.reveal_hidden_weaknesses)
+    .with_enable_input(args.enable_input);
 
     module
         .sync_input_switch()

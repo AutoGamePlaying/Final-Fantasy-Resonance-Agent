@@ -146,6 +146,58 @@ pub fn module_with_data(bridge_dir: &Path, data_dir: impl Into<PathBuf>) -> FfrM
 }
 
 #[allow(dead_code)]
+pub fn module_with_db(bridge_dir: &Path, db_path: impl Into<PathBuf>) -> FfrModule {
+    module(bridge_dir).with_db(db_path)
+}
+
+#[allow(dead_code)]
+pub fn build_fixture_db_from_export(export_dir: &Path, db_path: &Path) {
+    let options = ffr_db::BuildOptions {
+        inputs: ffr_db::BuildInputs {
+            export: Some(export_dir.to_path_buf()),
+            ..Default::default()
+        },
+        output: db_path.to_path_buf(),
+        stages: Some(vec![
+            ffr_db::Stage::Text,
+            ffr_db::Stage::Battle,
+            ffr_db::Stage::World,
+        ]),
+        game_build_id: None,
+    };
+    ffr_db::build(&options).expect("build fixture ffr-db sqlite");
+}
+
+#[allow(dead_code)]
+pub async fn read_all_resource_text(module: &FfrModule, uri: &str) -> String {
+    use agp_game::ResourceRange;
+
+    let mut out = String::new();
+    let mut offset = 0_u64;
+    loop {
+        let page = module
+            .read_resource(
+                uri,
+                ResourceRange {
+                    offset,
+                    length: 64 * 1024,
+                },
+            )
+            .await
+            .expect("read resource page");
+        let Content::Text { text } = page.content else {
+            panic!("resource page content must be Text");
+        };
+        out.push_str(&text);
+        match page.next_offset {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    out
+}
+
+#[allow(dead_code)]
 pub async fn call_json(module: &FfrModule, name: &str) -> (ToolOutput, Value) {
     let output = module
         .call_tool(name, json!({}), &CallContext::new(RunId::new()))

@@ -1,7 +1,7 @@
-//! Lazy, per-domain cached access to `ffr-data` tables and serialized resource payloads.
+//! Static game-data backends (`ffr-db` SQLite primary backend + `ffr-data` JSON reference cache).
 //!
-//! Constructing [`GameDataCache`] performs no disk I/O so `ffr-module` can always start even when
-//! the export directory is absent or only partially populated.
+//! Constructing either backend performs no disk I/O so `ffr-module` can always start even when
+//! the database file or export directory is absent or incompatible.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,6 +10,167 @@ use std::sync::{Arc, RwLock};
 use ffr_data::battle::{BattleData, CommandSkillData, EnemyChapterIndex};
 use ffr_data::world::WorldData;
 use ffr_data::{DataStore, FlagConditionData, MapUnitPlayableData, ScenarioData};
+use ffr_db::{DbError, GameDb};
+
+/// Cached domain-availability flags inspected once after opening a [`GameDb`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DbAvailability {
+    pub world: bool,
+    pub battle: bool,
+    pub scenario: bool,
+    pub command_skills: bool,
+    pub map_unit_playable: bool,
+    pub flag_conditions: bool,
+    pub enemy_chapters: bool,
+}
+
+/// Lazy SQLite backend backed by [`GameDb`].
+///
+/// Opens the database on first query and caches the shared read-only handle, domain availability
+/// flags, and serialized `ffr://` resource payloads.
+#[derive(Debug)]
+pub struct DbDataCache {
+    db_path: Option<PathBuf>,
+    db: RwLock<Option<Arc<GameDb>>>,
+    availability: RwLock<Option<DbAvailability>>,
+    resource_payloads: RwLock<HashMap<String, Arc<String>>>,
+}
+
+impl DbDataCache {
+    /// Create a lazy database backend bound to an optional SQLite file path.
+    pub fn new(db_path: Option<PathBuf>) -> Self {
+        Self {
+            db_path,
+            db: RwLock::new(None),
+            availability: RwLock::new(None),
+            resource_payloads: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Open and cache the read-only [`GameDb`] handle, returning a Chinese error with rebuild
+    /// instructions when unconfigured, missing, or schema-incompatible.
+    pub fn open(&self) -> Result<Arc<GameDb>, String> {
+        {
+            let guard = self
+                .db
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(db) = guard.as_ref() {
+                return Ok(Arc::clone(db));
+            }
+        }
+        let Some(path) = self.db_path.as_deref() else {
+            return Err(
+                "未配置游戏数据库：请使用 --db 指定 SQLite 数据库文件，或设置环境变量 FFR_DEPS（默认读取 $FFR_DEPS/ffr/db/ffr.sqlite）；可先运行 `ffr-db build` 构建数据库，或显式传入 --data-dir 使用导出目录"
+                    .to_owned(),
+            );
+        };
+        let opened = GameDb::open(path).map_err(format_db_open_error)?;
+        let shared = Arc::new(opened);
+        let mut guard = self
+            .db
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cached = guard.get_or_insert_with(|| Arc::clone(&shared));
+        Ok(Arc::clone(cached))
+    }
+
+    /// Open the database and return cached domain-availability flags.
+    pub fn open_with_availability(&self) -> Result<(Arc<GameDb>, DbAvailability), String> {
+        let db = self.open()?;
+        {
+            let guard = self
+                .availability
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(avail) = *guard {
+                return Ok((db, avail));
+            }
+        }
+        let computed = DbAvailability {
+            world: db.has_world_data().unwrap_or(false),
+            battle: db.has_battle_data().unwrap_or(false),
+            scenario: db.has_scenario_data().unwrap_or(false),
+            command_skills: db.has_command_skills().unwrap_or(false),
+            map_unit_playable: db.has_playable_units().unwrap_or(false),
+            flag_conditions: db.has_flag_conditions().unwrap_or(false),
+            enemy_chapters: db.enemy_chapters_available().unwrap_or(false),
+        };
+        let mut guard = self
+            .availability
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cached = *guard.get_or_insert(computed);
+        Ok((db, cached))
+    }
+
+    /// Return a cached serialized resource payload or compute and store it once.
+    pub fn get_or_build_resource<F>(&self, key: &str, builder: F) -> Result<Arc<String>, String>
+    where
+        F: FnOnce(&Self) -> Result<String, String>,
+    {
+        {
+            let guard = self
+                .resource_payloads
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(payload) = guard.get(key) {
+                return Ok(Arc::clone(payload));
+            }
+        }
+        let built = Arc::new(builder(self)?);
+        let mut guard = self
+            .resource_payloads
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = guard
+            .entry(key.to_owned())
+            .or_insert_with(|| Arc::clone(&built));
+        Ok(Arc::clone(entry))
+    }
+}
+
+fn format_db_open_error(error: DbError) -> String {
+    match error {
+        DbError::OpenFailed { path, detail } => format!(
+            "游戏数据库不存在或无法打开（{}）：{detail}；请先运行 `ffr-db build` 构建数据库（默认输出到 $FFR_DEPS/ffr/db/ffr.sqlite），或用 --db 指定有效文件",
+            path.display()
+        ),
+        DbError::SchemaVersionMismatch { .. } | DbError::MissingSchemaVersion { .. } => {
+            error.to_string()
+        }
+        other => format!("打开游戏数据库失败：{other}；请运行 `ffr-db build` 重新构建"),
+    }
+}
+
+/// Active static game-data backend for [`crate::FfrModule`].
+#[derive(Debug)]
+pub enum GameDataSource {
+    /// Primary SQLite database backend (`--db` or default `$FFR_DEPS/ffr/db/ffr.sqlite`).
+    Db(DbDataCache),
+    /// Legacy exported-JSON reference backend (enabled only when `--data-dir` is explicitly given).
+    Json(GameDataCache),
+}
+
+impl GameDataSource {
+    /// Construct a lazy SQLite database backend.
+    pub fn db(db_path: Option<PathBuf>) -> Self {
+        Self::Db(DbDataCache::new(db_path))
+    }
+
+    /// Construct the legacy exported-JSON reference backend.
+    pub fn json(data_dir: Option<PathBuf>) -> Self {
+        Self::Json(GameDataCache::new(data_dir))
+    }
+
+    /// Returns `true` when the underlying backend is available for building resource size hints.
+    pub fn is_available(&self) -> bool {
+        match self {
+            Self::Db(db_cache) => db_cache.open().is_ok(),
+            Self::Json(cache) => cache.require_data_dir().is_ok(),
+        }
+    }
+}
 
 /// Cached, lazy loader over an optional FFR CUE4Parse export directory.
 #[derive(Debug)]

@@ -136,7 +136,7 @@ async fn session_creates_the_bridge_directory_and_missing_data_is_reported() {
         .list_resources()
         .await
         .expect("resources list succeeds");
-    assert_eq!(resources.len(), 4);
+    assert_eq!(resources.len(), 5);
     assert!(resources.iter().all(|res| res.size_hint.is_none()));
 
     let missing_error = module
@@ -160,10 +160,9 @@ async fn session_creates_the_bridge_directory_and_missing_data_is_reported() {
             },
         )
         .await
-        .expect_err("unconfigured data dir fails cleanly");
+        .expect_err("unconfigured database fails cleanly");
     assert!(
-        unconfigured_error
-            .to_string()
-            .contains("未配置游戏数据目录")
+        unconfigured_error.to_string().contains("未配置游戏数据库"),
+        "{unconfigured_error}"
     );
 }

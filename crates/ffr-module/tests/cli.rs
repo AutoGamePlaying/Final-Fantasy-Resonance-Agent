@@ -5,7 +5,7 @@ use std::process::{Child, Command, Stdio};
 
 use agp_core::RunId;
 use agp_game::PROTOCOL_VERSION;
-use common::{TestDir, copy_dir_recursive, fixture_data_export};
+use common::{TestDir, build_fixture_db_from_export, build_merged_fixture_export};
 use serde_json::{Value, json};
 
 fn exchange(mut child: Child, requests: &[Value]) -> Vec<Value> {
@@ -106,7 +106,7 @@ fn startup_succeeds_when_data_dir_is_missing_and_status_tools_still_work() {
     );
 
     assert_eq!(responses.len(), 3);
-    assert_eq!(responses[0]["result"]["info"]["toolset_version"], "ffr-2");
+    assert_eq!(responses[0]["result"]["info"]["toolset_version"], "ffr-3");
     assert_eq!(responses[1]["result"]["output"]["is_error"], false);
     assert_eq!(responses[2]["result"]["output"]["is_error"], true);
     let err_text = responses[2]["result"]["output"]["content"][0]["text"]
@@ -116,13 +116,18 @@ fn startup_succeeds_when_data_dir_is_missing_and_status_tools_still_work() {
 }
 
 #[test]
-fn data_dir_defaults_to_ffr_deps_export_directory() {
+fn db_defaults_to_ffr_deps_sqlite_file() {
     let temp = TestDir::new();
     let bridge_dir = temp.path().join("bridge");
     let deps_dir = temp.path().join("deps");
-    let export_dir = deps_dir.join("ffr/export");
-    copy_dir_recursive(&fixture_data_export(), &export_dir);
+    let export_dir = temp.path().join("export-src");
+    build_merged_fixture_export(&export_dir);
 
+    let db_path = deps_dir.join("ffr/db/ffr.sqlite");
+    std::fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
+    build_fixture_db_from_export(&export_dir, &db_path);
+
+    // Note: `$FFR_DEPS/ffr/export` does NOT exist here; default must open `$FFR_DEPS/ffr/db/ffr.sqlite`.
     let child = Command::new(env!("CARGO_BIN_EXE_ffr-module"))
         .args(["--bridge-dir", bridge_dir.to_str().expect("utf8 path")])
         .env_remove("FFR_GAME_DIR")
@@ -131,7 +136,7 @@ fn data_dir_defaults_to_ffr_deps_export_directory() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn ffr-module using FFR_DEPS");
+        .expect("spawn ffr-module using default FFR_DEPS sqlite");
 
     let responses = exchange(
         child,
@@ -163,8 +168,171 @@ fn data_dir_defaults_to_ffr_deps_export_directory() {
     assert_eq!(responses[1]["result"]["output"]["is_error"], false);
     assert_eq!(
         responses[1]["result"]["output"]["content"][1]["value"]["name"],
-        "起始之森"
+        "启程之风"
     );
+}
+
+#[test]
+fn startup_fails_in_chinese_when_both_db_and_data_dir_are_specified() {
+    let temp = TestDir::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_ffr-module"))
+        .args([
+            "--bridge-dir",
+            temp.path().to_str().expect("utf8 path"),
+            "--db",
+            temp.path().join("ffr.sqlite").to_str().expect("utf8 path"),
+            "--data-dir",
+            temp.path().join("export").to_str().expect("utf8 path"),
+        ])
+        .env_remove("FFR_GAME_DIR")
+        .env_remove("FFR_DEPS")
+        .output()
+        .expect("run ffr-module with conflicting --db and --data-dir");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "stdout is protocol-only");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("--db"), "{stderr}");
+    assert!(stderr.contains("--data-dir"), "{stderr}");
+    assert!(stderr.contains("不能同时指定"), "{stderr}");
+}
+
+#[test]
+fn startup_succeeds_when_db_is_missing_or_incompatible_and_status_tools_still_work() {
+    let temp = TestDir::new();
+    let bridge_dir = temp.path().join("bridge");
+    let missing_db = temp.path().join("missing.sqlite");
+
+    // 1. Missing DB file.
+    let child_missing = Command::new(env!("CARGO_BIN_EXE_ffr-module"))
+        .args([
+            "--bridge-dir",
+            bridge_dir.to_str().expect("utf8 path"),
+            "--db",
+            missing_db.to_str().expect("utf8 path"),
+        ])
+        .env_remove("FFR_GAME_DIR")
+        .env_remove("FFR_DEPS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ffr-module with missing db");
+
+    let missing_responses = exchange(
+        child_missing,
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocol_version": PROTOCOL_VERSION,
+                    "client_name": "cli-test",
+                    "client_version": "1",
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "game_status",
+                    "args": {},
+                    "run_id": RunId::new(),
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "read_chapter",
+                    "args": {},
+                    "run_id": RunId::new(),
+                }
+            }),
+        ],
+    );
+    assert_eq!(missing_responses[1]["result"]["output"]["is_error"], false);
+    assert_eq!(missing_responses[2]["result"]["output"]["is_error"], true);
+    let missing_err = missing_responses[2]["result"]["output"]["content"][0]["text"]
+        .as_str()
+        .expect("missing db error text");
+    assert!(missing_err.contains("ffr-db build"), "{missing_err}");
+    assert!(missing_err.contains("不存在"), "{missing_err}");
+
+    // 2. Incompatible schema_version in DB file.
+    let export_dir = temp.path().join("export-src");
+    build_merged_fixture_export(&export_dir);
+    let bad_ver_db = temp.path().join("bad-version.sqlite");
+    build_fixture_db_from_export(&export_dir, &bad_ver_db);
+    {
+        let conn = rusqlite::Connection::open(&bad_ver_db).expect("open temp db to tamper version");
+        conn.execute(
+            "UPDATE meta SET value = '999' WHERE key = 'schema_version'",
+            [],
+        )
+        .expect("tamper schema_version");
+    }
+
+    let child_bad = Command::new(env!("CARGO_BIN_EXE_ffr-module"))
+        .args([
+            "--bridge-dir",
+            bridge_dir.to_str().expect("utf8 path"),
+            "--db",
+            bad_ver_db.to_str().expect("utf8 path"),
+        ])
+        .env_remove("FFR_GAME_DIR")
+        .env_remove("FFR_DEPS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ffr-module with bad schema version db");
+
+    let bad_responses = exchange(
+        child_bad,
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocol_version": PROTOCOL_VERSION,
+                    "client_name": "cli-test",
+                    "client_version": "1",
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "game_status",
+                    "args": {},
+                    "run_id": RunId::new(),
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "read_enemy",
+                    "args": { "unit_id": 9101 },
+                    "run_id": RunId::new(),
+                }
+            }),
+        ],
+    );
+    assert_eq!(bad_responses[1]["result"]["output"]["is_error"], false);
+    assert_eq!(bad_responses[2]["result"]["output"]["is_error"], true);
+    let version_err = bad_responses[2]["result"]["output"]["content"][0]["text"]
+        .as_str()
+        .expect("version mismatch error text");
+    assert!(version_err.contains("版本不兼容"), "{version_err}");
+    assert!(version_err.contains("ffr-db build"), "{version_err}");
 }
 
 #[test]
@@ -172,8 +340,10 @@ fn cli_flag_controls_reveal_hidden_weaknesses_in_read_game_state() {
     let temp = TestDir::new();
     let bridge_dir = temp.path().join("bridge");
     let export_dir = temp.path().join("export");
+    let db_path = temp.path().join("ffr.sqlite");
     std::fs::create_dir_all(&bridge_dir).expect("create bridge dir");
-    common::build_merged_fixture_export(&export_dir);
+    build_merged_fixture_export(&export_dir);
+    build_fixture_db_from_export(&export_dir, &db_path);
 
     let fixture = common::load_bridge_v1_fixture("battle-cmd.json");
     std::fs::write(
@@ -182,12 +352,12 @@ fn cli_flag_controls_reveal_hidden_weaknesses_in_read_game_state() {
     )
     .expect("write state.json");
 
-    let run_once = |extra_args: &[&str]| {
+    let run_once = |backend_flag: &str, backend_path: &str, extra_args: &[&str]| {
         let mut args = vec![
             "--bridge-dir",
             bridge_dir.to_str().expect("utf8 bridge path"),
-            "--data-dir",
-            export_dir.to_str().expect("utf8 export path"),
+            backend_flag,
+            backend_path,
         ];
         args.extend_from_slice(extra_args);
         let child = Command::new(env!("CARGO_BIN_EXE_ffr-module"))
@@ -226,40 +396,45 @@ fn cli_flag_controls_reveal_hidden_weaknesses_in_read_game_state() {
         )
     };
 
-    // Default (fair mode): hidden weaknesses are withheld.
-    let fair = run_once(&[]);
-    let fair_out = &fair[1]["result"]["output"];
-    assert_eq!(fair_out["is_error"], false);
-    assert_eq!(
-        fair_out["content"][1]["value"]["reveal_hidden_weaknesses"],
-        false
-    );
-    let fair_text = fair_out["content"][0]["text"].as_str().expect("text");
-    assert!(fair_text.contains("光标在「招式」"), "{fair_text}");
-    assert!(
-        fair_text.contains("数据表另有 1 个未揭示弱点"),
-        "{fair_text}"
-    );
-    let fair_enemy_section = fair_text
-        .split_once("- 敌方：")
-        .map(|(_, rest)| rest)
-        .expect("enemy section in summary");
-    assert!(!fair_enemy_section.contains("水"), "{fair_enemy_section}");
-    assert!(!fair_enemy_section.contains("雷"), "{fair_enemy_section}");
+    for (flag, path) in [
+        ("--db", db_path.to_str().expect("utf8 db path")),
+        ("--data-dir", export_dir.to_str().expect("utf8 export path")),
+    ] {
+        // Default (fair mode): hidden weaknesses are withheld.
+        let fair = run_once(flag, path, &[]);
+        let fair_out = &fair[1]["result"]["output"];
+        assert_eq!(fair_out["is_error"], false);
+        assert_eq!(
+            fair_out["content"][1]["value"]["reveal_hidden_weaknesses"],
+            false
+        );
+        let fair_text = fair_out["content"][0]["text"].as_str().expect("text");
+        assert!(fair_text.contains("光标在「招式」"), "{fair_text}");
+        assert!(
+            fair_text.contains("数据表另有 1 个未揭示弱点，完整弱点可用 read_enemy("),
+            "{fair_text}"
+        );
+        let fair_enemy_section = fair_text
+            .split_once("- 敌方：")
+            .map(|(_, rest)| rest)
+            .expect("enemy section in summary");
+        assert!(!fair_enemy_section.contains("水"), "{fair_enemy_section}");
+        assert!(!fair_enemy_section.contains("雷"), "{fair_enemy_section}");
 
-    // Opt-in flag: hidden weaknesses are revealed.
-    let revealed = run_once(&["--reveal-hidden-weaknesses"]);
-    let rev_out = &revealed[1]["result"]["output"];
-    assert_eq!(rev_out["is_error"], false);
-    assert_eq!(
-        rev_out["content"][1]["value"]["reveal_hidden_weaknesses"],
-        true
-    );
-    let rev_text = rev_out["content"][0]["text"].as_str().expect("text");
-    let rev_enemy_section = rev_text
-        .split_once("- 敌方：")
-        .map(|(_, rest)| rest)
-        .expect("enemy section in revealed summary");
-    assert!(rev_enemy_section.contains("水"), "{rev_enemy_section}");
-    assert!(rev_enemy_section.contains("雷"), "{rev_enemy_section}");
+        // Opt-in flag: hidden weaknesses are revealed.
+        let revealed = run_once(flag, path, &["--reveal-hidden-weaknesses"]);
+        let rev_out = &revealed[1]["result"]["output"];
+        assert_eq!(rev_out["is_error"], false);
+        assert_eq!(
+            rev_out["content"][1]["value"]["reveal_hidden_weaknesses"],
+            true
+        );
+        let rev_text = rev_out["content"][0]["text"].as_str().expect("text");
+        let rev_enemy_section = rev_text
+            .split_once("- 敌方：")
+            .map(|(_, rest)| rest)
+            .expect("enemy section in revealed summary");
+        assert!(rev_enemy_section.contains("水"), "{rev_enemy_section}");
+        assert!(rev_enemy_section.contains("雷"), "{rev_enemy_section}");
+    }
 }

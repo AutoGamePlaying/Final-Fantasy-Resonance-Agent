@@ -91,11 +91,11 @@ impl InputFakeMod {
 async fn input_tools_are_disabled_by_default_and_exposed_only_when_enabled() {
     let temp = TestDir::new();
 
-    // Default module: input disabled, 17 read-only tools, press/move absent & rejected.
+    // Default module: input disabled, 23 read-only tools, press/move absent & rejected.
     let readonly = module(temp.path());
     assert!(!readonly.input_enabled());
     let default_tools = readonly.list_tools().await.expect("list default tools");
-    assert_eq!(default_tools.len(), 17);
+    assert_eq!(default_tools.len(), 23);
     assert!(
         !default_tools
             .iter()
@@ -114,7 +114,7 @@ async fn input_tools_are_disabled_by_default_and_exposed_only_when_enabled() {
     let armed = module(temp.path()).with_enable_input(true);
     assert!(armed.input_enabled());
     let armed_tools = armed.list_tools().await.expect("list armed tools");
-    assert_eq!(armed_tools.len(), 19);
+    assert_eq!(armed_tools.len(), 25);
 
     let press_tool = armed_tools
         .iter()
@@ -370,7 +370,7 @@ fn cli_enable_input_flag_gates_tools_and_manages_switch_file_lifecycle() {
         serde_json::from_str(&line).expect("parse resp")
     };
 
-    // 1. Default CLI (without --enable-input): deletes pre-existing stale input.enabled, lists 17 tools.
+    // 1. Default CLI (without --enable-input): deletes pre-existing stale input.enabled, lists 23 tools.
     std::fs::write(&switch_path, b"stale\n").expect("plant stale switch");
     let mut child = Command::new(env!("CARGO_BIN_EXE_ffr-module"))
         .args(["--bridge-dir", bridge_dir.to_str().expect("utf8 path")])
@@ -411,7 +411,7 @@ fn cli_enable_input_flag_gates_tools_and_manages_switch_file_lifecycle() {
         let tools = tools_resp["result"]["tools"]
             .as_array()
             .expect("tools array");
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 23);
         assert!(
             !tools
                 .iter()
@@ -465,7 +465,7 @@ fn cli_enable_input_flag_gates_tools_and_manages_switch_file_lifecycle() {
         let tools = tools_resp["result"]["tools"]
             .as_array()
             .expect("tools array");
-        assert_eq!(tools.len(), 19);
+        assert_eq!(tools.len(), 25);
         let press = tools
             .iter()
             .find(|t| t["name"] == "press")

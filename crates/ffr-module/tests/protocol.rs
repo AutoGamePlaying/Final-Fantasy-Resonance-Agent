@@ -73,11 +73,11 @@ async fn memory_pipe_serves_initialize_tools_data_queries_and_paginated_resource
         initialized["result"]["info"]["module_version"],
         env!("CARGO_PKG_VERSION")
     );
-    assert_eq!(initialized["result"]["info"]["toolset_version"], "ffr-2");
+    assert_eq!(initialized["result"]["info"]["toolset_version"], "ffr-3");
 
     let tools = client.request(2, "tools/list", json!({})).await;
     let tool_list = tools["result"]["tools"].as_array().expect("tools is array");
-    assert_eq!(tool_list.len(), 17);
+    assert_eq!(tool_list.len(), 23);
     let names: Vec<&str> = tool_list
         .iter()
         .map(|t| t["name"].as_str().expect("tool name"))
@@ -102,6 +102,12 @@ async fn memory_pipe_serves_initialize_tools_data_queries_and_paginated_resource
             "read_quest",
             "read_shop",
             "search_data",
+            "find_route",
+            "where_to_get",
+            "read_npc",
+            "read_talk",
+            "whats_near",
+            "query_game_db",
         ]
     );
     for tool in &tool_list[..8] {
@@ -189,6 +195,7 @@ async fn memory_pipe_serves_initialize_tools_data_queries_and_paginated_resource
             "ffr://maps",
             "ffr://enemies",
             "ffr://skills",
+            "ffr://db/schema",
         ]
     );
     for res in res_list {

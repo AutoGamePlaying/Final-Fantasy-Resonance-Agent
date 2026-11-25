@@ -8,9 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use agp_game::{CallContext, Content, ToolCategory, ToolDescriptor, ToolOutput};
 use agp_platform::FileChannel;
+use ffr_data::FlagConditionEntry;
 use serde_json::{Map, Value, json};
 
-use crate::data_cache::GameDataCache;
+use crate::data_cache::GameDataSource;
 use crate::state_tools::{
     LookupCtx, extract_i64_list, extract_str_list, format_item_label, format_location,
     format_map_label, format_play_time, item_category_zh, obj_array, obj_bool, obj_f64, obj_i64,
@@ -137,7 +138,7 @@ pub fn bridge_command_tool_descriptors() -> Vec<ToolDescriptor> {
 /// Dispatch one on-demand read-only bridge command tool call.
 pub async fn call_bridge_command(
     channel: &FileChannel,
-    cache: &GameDataCache,
+    source: &GameDataSource,
     name: &str,
     args: Value,
     ctx: &CallContext,
@@ -147,9 +148,9 @@ pub async fn call_bridge_command(
     };
 
     match name {
-        "read_save_slots" => handle_read_save_slots(channel, cache, obj, ctx).await,
-        "read_inventory" => handle_read_inventory(channel, cache, obj, ctx).await,
-        "read_event_flags" => handle_read_event_flags(channel, cache, obj, ctx).await,
+        "read_save_slots" => handle_read_save_slots(channel, source, obj, ctx).await,
+        "read_inventory" => handle_read_inventory(channel, source, obj, ctx).await,
+        "read_event_flags" => handle_read_event_flags(channel, source, obj, ctx).await,
         "read_input_state" => handle_read_input_state(channel, obj, ctx).await,
         "query_nav_path" => handle_query_nav_path(channel, obj, ctx).await,
         _ => arg_error(format!("未知桥命令工具 `{name}`")),
@@ -158,7 +159,7 @@ pub async fn call_bridge_command(
 
 async fn handle_read_save_slots(
     channel: &FileChannel,
-    cache: &GameDataCache,
+    source: &GameDataSource,
     args: &Map<String, Value>,
     ctx: &CallContext,
 ) -> ToolOutput {
@@ -173,7 +174,7 @@ async fn handle_read_save_slots(
         return bridge_format_error("save_slots", "回复 result 不是对象");
     };
 
-    let lookup = LookupCtx::from_cache(cache, true, true, true);
+    let lookup = LookupCtx::from_source(source, true, true, true);
     let slot_count = obj_i64(res, "slot_count");
     let last_saved_slot = obj_i64(res, "last_saved_slot").filter(|&s| s >= 0);
     let raw_slots = obj_array(res, "slots").unwrap_or(&[]);
@@ -294,7 +295,7 @@ async fn handle_read_save_slots(
 
 async fn handle_read_inventory(
     channel: &FileChannel,
-    cache: &GameDataCache,
+    source: &GameDataSource,
     args: &Map<String, Value>,
     ctx: &CallContext,
 ) -> ToolOutput {
@@ -309,7 +310,7 @@ async fn handle_read_inventory(
         return bridge_format_error("inventory", "回复 result 不是对象");
     };
 
-    let lookup = LookupCtx::from_cache(cache, true, false, false);
+    let lookup = LookupCtx::from_source(source, true, false, false);
     let count = obj_i64(res, "count");
     let total_qty = obj_i64(res, "total_qty");
     let hash = obj_str(res, "hash");
@@ -375,7 +376,7 @@ async fn handle_read_inventory(
 
 async fn handle_read_event_flags(
     channel: &FileChannel,
-    cache: &GameDataCache,
+    source: &GameDataSource,
     args: &Map<String, Value>,
     ctx: &CallContext,
 ) -> ToolOutput {
@@ -441,46 +442,33 @@ async fn handle_read_event_flags(
         }
     }
 
-    let related_conditions = cache.flag_conditions().ok().map(|flag_data| {
-        let lookup_ids: &[i64] = filter_ids.as_deref().unwrap_or(&true_ids);
-        let mut matched = BTreeMap::new();
-        for &flag_id in lookup_ids {
-            for entry in flag_data.conditions_for_flag(flag_id) {
-                matched.entry(entry.row_key.as_str()).or_insert(entry);
+    let lookup_ids: &[i64] = filter_ids.as_deref().unwrap_or(&true_ids);
+    let related_conditions = match source {
+        GameDataSource::Db(db_cache) => db_cache
+            .open_with_availability()
+            .ok()
+            .filter(|(_, avail)| avail.flag_conditions)
+            .map(|(db, _)| {
+                let mut matched = BTreeMap::new();
+                for &flag_id in lookup_ids {
+                    if let Ok(entries) = db.flag_conditions_for_flag(flag_id) {
+                        for entry in entries {
+                            matched.entry(entry.row_key.clone()).or_insert(entry);
+                        }
+                    }
+                }
+                format_related_flag_conditions(matched.values(), &true_set, &mut lines)
+            }),
+        GameDataSource::Json(cache) => cache.flag_conditions().ok().map(|flag_data| {
+            let mut matched = BTreeMap::new();
+            for &flag_id in lookup_ids {
+                for entry in flag_data.conditions_for_flag(flag_id) {
+                    matched.entry(entry.row_key.as_str()).or_insert(entry);
+                }
             }
-        }
-        let mut cond_json = Vec::with_capacity(matched.len());
-        let mut cond_labels = Vec::new();
-        for entry in matched.values() {
-            let satisfied = entry.evaluate(|fid| true_set.contains(&fid));
-            if cond_labels.len() < 16 {
-                cond_labels.push(format!(
-                    "{}({})={}",
-                    entry.row_key,
-                    entry.condition,
-                    if satisfied { "满足" } else { "未满足" }
-                ));
-            }
-            cond_json.push(json!({
-                "name": entry.row_key,
-                "condition": entry.condition,
-                "flag_ids": entry.flag_ids(),
-                "satisfied": satisfied,
-            }));
-        }
-        if !cond_labels.is_empty() {
-            let suffix = if matched.len() > cond_labels.len() {
-                format!("……等共 {} 项", matched.len())
-            } else {
-                String::new()
-            };
-            lines.push(format!(
-                "- 关联旗标条件：{}{suffix}",
-                cond_labels.join("、")
-            ));
-        }
-        cond_json
-    });
+            format_related_flag_conditions(matched.values().copied(), &true_set, &mut lines)
+        }),
+    };
 
     let mut payload = json!({
         "ok": true,
@@ -502,6 +490,45 @@ async fn handle_read_event_flags(
         Content::text(lines.join("\n")),
         Content::json(payload),
     ])
+}
+
+fn format_related_flag_conditions<'a>(
+    entries: impl ExactSizeIterator<Item = &'a FlagConditionEntry>,
+    true_set: &BTreeSet<i64>,
+    lines: &mut Vec<String>,
+) -> Vec<Value> {
+    let total = entries.len();
+    let mut cond_json = Vec::with_capacity(total);
+    let mut cond_labels = Vec::new();
+    for entry in entries {
+        let satisfied = entry.evaluate(|fid| true_set.contains(&fid));
+        if cond_labels.len() < 16 {
+            cond_labels.push(format!(
+                "{}({})={}",
+                entry.row_key,
+                entry.condition,
+                if satisfied { "满足" } else { "未满足" }
+            ));
+        }
+        cond_json.push(json!({
+            "name": entry.row_key,
+            "condition": entry.condition,
+            "flag_ids": entry.flag_ids(),
+            "satisfied": satisfied,
+        }));
+    }
+    if !cond_labels.is_empty() {
+        let suffix = if total > cond_labels.len() {
+            format!("……等共 {total} 项")
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "- 关联旗标条件：{}{suffix}",
+            cond_labels.join("、")
+        ));
+    }
+    cond_json
 }
 
 async fn handle_read_input_state(

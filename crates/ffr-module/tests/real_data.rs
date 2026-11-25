@@ -6,9 +6,14 @@ mod common;
 
 use std::path::PathBuf;
 
-use agp_game::{Content, GameModule, ResourceRange};
-use common::{TestDir, call_data_ok, module_with_data, repo_root};
+use agp_core::RunId;
+use agp_game::{CallContext, Content, GameModule, ResourceRange};
+use common::{
+    TestDir, build_fixture_db_from_export, call_data_ok, module_with_data, module_with_db,
+    read_all_resource_text, repo_root,
+};
 use ffr_data::{FFR_DEPS_ENV, datatable_dir, export_dir_from_deps, localization_file};
+use ffr_db::{GameDb, default_db_path_from_deps};
 use serde_json::json;
 
 fn real_export_dir() -> PathBuf {
@@ -18,6 +23,24 @@ fn real_export_dir() -> PathBuf {
         return export_dir_from_deps(PathBuf::from(deps));
     }
     export_dir_from_deps(repo_root().join(".deps"))
+}
+
+fn real_db_candidate() -> PathBuf {
+    if let Some(deps) = std::env::var_os(FFR_DEPS_ENV)
+        && !deps.is_empty()
+    {
+        return default_db_path_from_deps(PathBuf::from(deps));
+    }
+    default_db_path_from_deps(repo_root().join(".deps"))
+}
+
+fn has_populated_core_tables(db_path: &std::path::Path) -> bool {
+    let Ok(db) = GameDb::open(db_path) else {
+        return false;
+    };
+    db.has_battle_data().unwrap_or(false)
+        && db.has_world_data().unwrap_or(false)
+        && db.has_scenario_data().unwrap_or(false)
 }
 
 #[tokio::test]
@@ -95,7 +118,7 @@ async fn real_data_steel_bat_weak_to_ice_and_spot_checks() {
     assert_eq!(map_json["map_id"], 3001);
 
     let resources = module.list_resources().await.expect("list_resources");
-    assert_eq!(resources.len(), 4);
+    assert_eq!(resources.len(), 5);
     assert!(resources.iter().all(|r| r.size_hint.is_some_and(|n| n > 0)));
 
     let first_page = module
@@ -163,4 +186,181 @@ async fn real_data_steel_bat_weak_to_ice_and_spot_checks() {
             .any(|e| e["unit_id"] == 2),
         "第 2 章敌人列表不应包含钢蝠"
     );
+}
+
+#[tokio::test]
+async fn real_data_db_and_json_outputs_align_verbatim() {
+    let export_root = real_export_dir();
+    let unit_file = datatable_dir(&export_root).join("Unit/DT_UnitParameter.json");
+    let map_file = datatable_dir(&export_root).join("Map/CDT_MapData_Prod.json");
+    let has_data = unit_file.is_file()
+        && map_file.is_file()
+        && localization_file(&export_root, "zh-Hans").is_file();
+    if !has_data {
+        eprintln!(
+            "跳过真实数据 DB 对齐测试：未找到完整导出目录 {}",
+            export_root.display()
+        );
+        return;
+    }
+
+    let temp = TestDir::new();
+    let bridge_dir = temp.path().join("bridge");
+    let candidate_db = real_db_candidate();
+    let db_path = if has_populated_core_tables(&candidate_db) {
+        candidate_db
+    } else {
+        let built = temp.path().join("real-core.sqlite");
+        build_fixture_db_from_export(&export_root, &built);
+        built
+    };
+
+    let db_has_levels = GameDb::open(&db_path)
+        .ok()
+        .and_then(|db| db.map_exits(3001).ok())
+        .is_some_and(|exits| !exits.is_empty());
+
+    let db_mod = module_with_db(&bridge_dir, &db_path);
+    let json_mod = module_with_data(&bridge_dir, &export_root);
+
+    let mut cases = vec![
+        ("read_enemy", json!({ "name": "钢蝠" })),
+        ("read_enemy", json!({ "unit_id": 2 })),
+        ("read_skill", json!({ "name": "火炎" })),
+        ("read_item", json!({ "name": "恢复药" })),
+        ("read_item", json!({ "name": "碎星锤" })),
+        ("read_chapter", json!({})),
+        ("read_chapter", json!({ "chapter": 1 })),
+        ("read_shop", json!({ "shop_id": 2 })),
+        ("read_shop", json!({ "item_id": 1 })),
+        ("read_battle_group", json!({ "group_id": 1 })),
+        ("read_quest", json!({ "chapter": 1 })),
+        ("search_data", json!({ "query": "钢蝠" })),
+        ("search_data", json!({ "query": "火炎" })),
+        ("search_data", json!({ "query": "恢复药" })),
+    ];
+    if !db_has_levels {
+        cases.push(("read_map", json!({ "map_id": 3001 })));
+        cases.push(("read_map", json!({ "level_name": "Dng_01Gra_43_PL" })));
+    }
+
+    for (tool, args) in cases {
+        let db_out = db_mod
+            .call_tool(tool, args.clone(), &CallContext::new(RunId::new()))
+            .await
+            .expect("db real call");
+        let json_out = json_mod
+            .call_tool(tool, args.clone(), &CallContext::new(RunId::new()))
+            .await
+            .expect("json real call");
+        assert_eq!(
+            (db_out.is_error, &db_out.content),
+            (json_out.is_error, &json_out.content),
+            "真实数据 DB 与 JSON 输出不一致：{tool} {args}"
+        );
+    }
+
+    if db_has_levels {
+        // Full DB enriches `read_map` with level data (exits, NPCs, shops, save points, encounter zones)
+        // that legacy export-only JSON cannot provide; verify core fields align and enriched fields populate.
+        for args in [
+            json!({ "map_id": 3001 }),
+            json!({ "level_name": "Dng_01Gra_43_PL" }),
+        ] {
+            let (db_text, db_val) = call_data_ok(&db_mod, "read_map", args.clone()).await;
+            let (_, json_val) = call_data_ok(&json_mod, "read_map", args).await;
+            for key in [
+                "map_id",
+                "name",
+                "level_name",
+                "map_type",
+                "island",
+                "danger_level",
+                "teleportable",
+                "save_point",
+                "shop_facilities",
+                "treasure_count",
+            ] {
+                assert_eq!(db_val[key], json_val[key], "read_map core field `{key}`");
+            }
+            assert!(
+                db_val["exits"].as_array().is_some_and(|a| !a.is_empty()),
+                "full DB read_map(3001) should have exits: {db_text}"
+            );
+            assert!(
+                db_val["npcs"].as_array().is_some_and(|a| !a.is_empty()),
+                "full DB read_map(3001) should have npcs: {db_text}"
+            );
+            assert!(
+                db_val["shops"].as_array().is_some_and(|a| !a.is_empty()),
+                "full DB read_map(3001) should have shops: {db_text}"
+            );
+            assert!(
+                db_val["save_points"]
+                    .as_array()
+                    .is_some_and(|a| !a.is_empty()),
+                "full DB read_map(3001) should have save_points: {db_text}"
+            );
+        }
+        // Map 3000 has dungeon encounter zones (map 3001 is the safe entrance room).
+        let (dng_text, dng_val) =
+            call_data_ok(&db_mod, "read_map", json!({ "map_id": 3000 })).await;
+        assert!(
+            dng_val["encounter_zones"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty()),
+            "full DB read_map(3000) should have encounter_zones: {dng_text}"
+        );
+    }
+
+    // Also verify one concrete skill_id from `火炎` candidates aligns verbatim.
+    let (_, fire_json) = call_data_ok(&db_mod, "read_skill", json!({ "name": "火炎" })).await;
+    if let Some(first_id) = fire_json["candidates"]
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|c| c["skill_id"].as_i64())
+    {
+        let db_out = db_mod
+            .call_tool(
+                "read_skill",
+                json!({ "skill_id": first_id }),
+                &CallContext::new(RunId::new()),
+            )
+            .await
+            .expect("db skill by id");
+        let json_out = json_mod
+            .call_tool(
+                "read_skill",
+                json!({ "skill_id": first_id }),
+                &CallContext::new(RunId::new()),
+            )
+            .await
+            .expect("json skill by id");
+        assert_eq!(
+            (db_out.is_error, &db_out.content),
+            (json_out.is_error, &json_out.content),
+            "真实数据 read_skill(skill_id={first_id}) 不一致"
+        );
+    }
+
+    // Verify all catalog resources and descriptors match byte-for-byte on real data.
+    let db_res = db_mod.list_resources().await.expect("db list_resources");
+    let json_res = json_mod
+        .list_resources()
+        .await
+        .expect("json list_resources");
+    assert_eq!(db_res, json_res, "真实数据 list_resources 不一致");
+
+    for uri in [
+        "ffr://chapters",
+        "ffr://maps",
+        "ffr://enemies",
+        "ffr://enemies?chapter=1",
+        "ffr://skills",
+        "ffr://db/schema",
+    ] {
+        let db_body = read_all_resource_text(&db_mod, uri).await;
+        let json_body = read_all_resource_text(&json_mod, uri).await;
+        assert_eq!(db_body, json_body, "真实数据资源 `{uri}` 不一致");
+    }
 }

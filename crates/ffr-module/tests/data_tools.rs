@@ -249,9 +249,9 @@ async fn merged_fixture_covers_cross_kind_search_truncation_candidates_and_pagin
             .all(|r| matches!(r["kind"].as_str(), Some("enemy" | "skill")))
     );
 
-    // Resource listing and small-page UTF-8-safe pagination for all 4 catalogs.
+    // Resource listing and small-page UTF-8-safe pagination for all 5 catalogs.
     let descriptors = module.list_resources().await.expect("list_resources");
-    assert_eq!(descriptors.len(), 4);
+    assert_eq!(descriptors.len(), 5);
     for desc in &descriptors {
         assert!(desc.size_hint.is_some_and(|n| n > 0), "{desc:?}");
         let parsed = read_all_pages(&module, &desc.uri, 37).await;
@@ -260,6 +260,10 @@ async fn merged_fixture_covers_cross_kind_search_truncation_candidates_and_pagin
             "ffr://maps" => assert_eq!(parsed["maps"].as_array().map(Vec::len), Some(5)),
             "ffr://enemies" => assert_eq!(parsed["enemies"].as_array().map(Vec::len), Some(3)),
             "ffr://skills" => assert_eq!(parsed["skills"].as_array().map(Vec::len), Some(4)),
+            "ffr://db/schema" => assert!(
+                parsed["table_count"].as_u64().is_some_and(|n| n >= 70),
+                "{parsed}"
+            ),
             other => panic!("unexpected resource uri: {other}"),
         }
     }

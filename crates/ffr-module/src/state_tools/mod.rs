@@ -17,10 +17,12 @@ use agp_platform::{FileChannel, FileChannelError};
 use ffr_data::battle::{BattleData, CommandSkillData, Element, EnemyProfile, Skill};
 use ffr_data::world::{Item, ItemCategory, TreasureBox, WorldData};
 use ffr_data::{MODEL_LANGUAGE, MapUnitPlayableData, ScenarioData};
+use ffr_db::GameDb;
 use serde_json::{Map, Value, json};
 
-use crate::data_cache::GameDataCache;
+use crate::data_cache::{DbAvailability, GameDataCache, GameDataSource};
 use crate::data_tools::{collapse_ws, element_zh, resolve_zh_clean};
+use crate::data_tools_db::{format_db_main_quest_title, resolve_db_zh_clean, resolve_db_zh_raw};
 
 /// Name of the live game-state tool.
 pub const READ_GAME_STATE_TOOL: &str = "read_game_state";
@@ -107,16 +109,57 @@ impl ResolvedAction {
     }
 }
 
+enum LookupBackend {
+    Db {
+        db: Arc<GameDb>,
+        avail: DbAvailability,
+        need_world: bool,
+        need_battle: bool,
+        need_scenario: bool,
+    },
+    Json {
+        world: Option<Arc<WorldData>>,
+        battle: Option<Arc<BattleData>>,
+        scenario: Option<Arc<ScenarioData>>,
+        command_skills: Option<Arc<CommandSkillData>>,
+        map_unit_playable: Option<Arc<MapUnitPlayableData>>,
+    },
+    Unavailable,
+}
+
 /// Best-effort static data lookup facade used across status tools and bridge command tools.
 pub(crate) struct LookupCtx {
-    world: Option<Arc<WorldData>>,
-    battle: Option<Arc<BattleData>>,
-    scenario: Option<Arc<ScenarioData>>,
-    command_skills: Option<Arc<CommandSkillData>>,
-    map_unit_playable: Option<Arc<MapUnitPlayableData>>,
+    backend: LookupBackend,
 }
 
 impl LookupCtx {
+    pub(crate) fn from_source(
+        source: &GameDataSource,
+        need_world: bool,
+        need_battle: bool,
+        need_scenario: bool,
+    ) -> Self {
+        match source {
+            GameDataSource::Db(db_cache) => match db_cache.open_with_availability() {
+                Ok((db, avail)) => Self {
+                    backend: LookupBackend::Db {
+                        db,
+                        avail,
+                        need_world,
+                        need_battle,
+                        need_scenario,
+                    },
+                },
+                Err(_) => Self {
+                    backend: LookupBackend::Unavailable,
+                },
+            },
+            GameDataSource::Json(cache) => {
+                Self::from_cache(cache, need_world, need_battle, need_scenario)
+            }
+        }
+    }
+
     pub(crate) fn from_cache(
         cache: &GameDataCache,
         need_world: bool,
@@ -145,158 +188,544 @@ impl LookupCtx {
             None
         };
         Self {
-            world,
-            battle,
-            scenario,
-            command_skills,
-            map_unit_playable,
+            backend: LookupBackend::Json {
+                world,
+                battle,
+                scenario,
+                command_skills,
+                map_unit_playable,
+            },
+        }
+    }
+
+    pub(crate) fn has_world(&self) -> bool {
+        match &self.backend {
+            LookupBackend::Db {
+                avail, need_world, ..
+            } => *need_world && avail.world,
+            LookupBackend::Json { world, .. } => world.is_some(),
+            LookupBackend::Unavailable => false,
+        }
+    }
+
+    pub(crate) fn has_battle(&self) -> bool {
+        match &self.backend {
+            LookupBackend::Db {
+                avail, need_battle, ..
+            } => *need_battle && avail.battle,
+            LookupBackend::Json { battle, .. } => battle.is_some(),
+            LookupBackend::Unavailable => false,
+        }
+    }
+
+    pub(crate) fn has_scenario(&self) -> bool {
+        match &self.backend {
+            LookupBackend::Db {
+                avail,
+                need_scenario,
+                ..
+            } => *need_scenario && avail.scenario,
+            LookupBackend::Json { scenario, .. } => scenario.is_some(),
+            LookupBackend::Unavailable => false,
+        }
+    }
+
+    pub(crate) fn has_command_skills(&self) -> bool {
+        match &self.backend {
+            LookupBackend::Db {
+                avail, need_battle, ..
+            } => *need_battle && avail.command_skills,
+            LookupBackend::Json { command_skills, .. } => command_skills.is_some(),
+            LookupBackend::Unavailable => false,
+        }
+    }
+
+    pub(crate) fn has_map_unit_playable(&self) -> bool {
+        match &self.backend {
+            LookupBackend::Db {
+                avail, need_world, ..
+            } => *need_world && avail.map_unit_playable,
+            LookupBackend::Json {
+                map_unit_playable, ..
+            } => map_unit_playable.is_some(),
+            LookupBackend::Unavailable => false,
         }
     }
 
     pub(crate) fn map_name(&self, map_id: i64) -> Option<String> {
-        let world = self.world.as_deref()?;
-        let map = world.map_by_id(map_id)?;
-        resolve_zh_clean(world.text_resolver(), &map.name)
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_world,
+                ..
+            } => {
+                if !(*need_world && avail.world) {
+                    return None;
+                }
+                let map = db.map(map_id).ok()??;
+                resolve_db_zh_clean(db, &map.name)
+            }
+            LookupBackend::Json { world, .. } => {
+                let world = world.as_deref()?;
+                let map = world.map_by_id(map_id)?;
+                resolve_zh_clean(world.text_resolver(), &map.name)
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
     pub(crate) fn map_name_by_level(&self, level_name: &str) -> Option<(i64, Option<String>)> {
-        let world = self.world.as_deref()?;
-        let map = world.map_by_level_name(level_name)?;
-        let name = resolve_zh_clean(world.text_resolver(), &map.name);
-        Some((map.id, name))
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_world,
+                ..
+            } => {
+                if !(*need_world && avail.world) {
+                    return None;
+                }
+                let map = db.map_by_level(level_name).ok()??;
+                let name = resolve_db_zh_clean(db, &map.name);
+                Some((map.id, name))
+            }
+            LookupBackend::Json { world, .. } => {
+                let world = world.as_deref()?;
+                let map = world.map_by_level_name(level_name)?;
+                let name = resolve_zh_clean(world.text_resolver(), &map.name);
+                Some((map.id, name))
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
-    pub(crate) fn treasure_box(&self, map_id: i64, chest_id: i64) -> Option<&TreasureBox> {
-        self.world.as_deref()?.treasure_box(map_id, chest_id)
+    pub(crate) fn treasure_box(&self, map_id: i64, chest_id: i64) -> Option<TreasureBox> {
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_world,
+                ..
+            } => {
+                if !(*need_world && avail.world) {
+                    return None;
+                }
+                db.treasure_box(map_id, chest_id).ok().flatten()
+            }
+            LookupBackend::Json { world, .. } => {
+                world.as_deref()?.treasure_box(map_id, chest_id).cloned()
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
     pub(crate) fn unit_name(&self, unit_id: i64) -> Option<String> {
-        let battle = self.battle.as_deref()?;
-        battle
-            .unit_name_in(unit_id, MODEL_LANGUAGE)
-            .text
-            .and_then(|t| collapse_ws(&t))
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_battle,
+                ..
+            } => {
+                if !(*need_battle && avail.battle) {
+                    return None;
+                }
+                let unit = db.unit(unit_id).ok()??;
+                resolve_db_zh_clean(db, &unit.name)
+            }
+            LookupBackend::Json { battle, .. } => {
+                let battle = battle.as_deref()?;
+                battle
+                    .unit_name_in(unit_id, MODEL_LANGUAGE)
+                    .text
+                    .and_then(|t| collapse_ws(&t))
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
     pub(crate) fn enemy_profile(&self, unit_id: i64) -> Option<EnemyProfile> {
-        let battle = self.battle.as_deref()?;
-        let unit = battle.unit_by_id(unit_id)?;
-        Some(unit.to_enemy_profile(battle.unit_ai_by_id(unit_id)))
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_battle,
+                ..
+            } => {
+                if !(*need_battle && avail.battle) {
+                    return None;
+                }
+                db.enemy_profile(unit_id).ok().flatten()
+            }
+            LookupBackend::Json { battle, .. } => {
+                let battle = battle.as_deref()?;
+                let unit = battle.unit_by_id(unit_id)?;
+                Some(unit.to_enemy_profile(battle.unit_ai_by_id(unit_id)))
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
-    pub(crate) fn skill(&self, skill_id: i64) -> Option<&Skill> {
-        self.battle.as_deref()?.skill_by_id(skill_id)
+    pub(crate) fn skill(&self, skill_id: i64) -> Option<Skill> {
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_battle,
+                ..
+            } => {
+                if !(*need_battle && avail.battle) {
+                    return None;
+                }
+                db.skill(skill_id).ok().flatten()
+            }
+            LookupBackend::Json { battle, .. } => battle.as_deref()?.skill_by_id(skill_id).cloned(),
+            LookupBackend::Unavailable => None,
+        }
     }
 
     pub(crate) fn skill_name(&self, skill_id: i64) -> Option<String> {
-        let battle = self.battle.as_deref()?;
-        battle
-            .skill_name_in(skill_id, MODEL_LANGUAGE)
-            .text
-            .and_then(|t| collapse_ws(&t))
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_battle,
+                ..
+            } => {
+                if !(*need_battle && avail.battle) {
+                    return None;
+                }
+                let skill = db.skill(skill_id).ok()??;
+                resolve_db_zh_clean(db, &skill.name)
+            }
+            LookupBackend::Json { battle, .. } => {
+                let battle = battle.as_deref()?;
+                battle
+                    .skill_name_in(skill_id, MODEL_LANGUAGE)
+                    .text
+                    .and_then(|t| collapse_ws(&t))
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
-    pub(crate) fn item(&self, item_id: i64) -> Option<&Item> {
-        self.world.as_deref()?.item_by_id(item_id)
+    pub(crate) fn item(&self, item_id: i64) -> Option<Item> {
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_world,
+                ..
+            } => {
+                if !(*need_world && avail.world) {
+                    return None;
+                }
+                db.item(item_id).ok().flatten()
+            }
+            LookupBackend::Json { world, .. } => world.as_deref()?.item_by_id(item_id).cloned(),
+            LookupBackend::Unavailable => None,
+        }
     }
 
     pub(crate) fn item_name(&self, item_id: i64) -> Option<String> {
-        let world = self.world.as_deref()?;
-        let item = world.item_by_id(item_id)?;
-        resolve_zh_clean(world.text_resolver(), &item.name)
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_world,
+                ..
+            } => {
+                if !(*need_world && avail.world) {
+                    return None;
+                }
+                let item = db.item(item_id).ok()??;
+                resolve_db_zh_clean(db, &item.name)
+            }
+            LookupBackend::Json { world, .. } => {
+                let world = world.as_deref()?;
+                let item = world.item_by_id(item_id)?;
+                resolve_zh_clean(world.text_resolver(), &item.name)
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
     pub(crate) fn shop_name(&self, shop_id: i64) -> Option<String> {
-        let world = self.world.as_deref()?;
-        let shop = world.shop_by_id(shop_id)?;
-        resolve_zh_clean(world.text_resolver(), &shop.name)
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_world,
+                ..
+            } => {
+                if !(*need_world && avail.world) {
+                    return None;
+                }
+                let resolved = db.shop(shop_id).ok()??;
+                resolve_db_zh_clean(db, &resolved.shop.name)
+            }
+            LookupBackend::Json { world, .. } => {
+                let world = world.as_deref()?;
+                let shop = world.shop_by_id(shop_id)?;
+                resolve_zh_clean(world.text_resolver(), &shop.name)
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
     pub(crate) fn inn_price(&self, inn_id: i64) -> Option<i64> {
-        let world = self.world.as_deref()?;
-        world
-            .inns()
-            .iter()
-            .find(|inn| inn.id == inn_id)
-            .map(|inn| inn.price)
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_world,
+                ..
+            } => {
+                if !(*need_world && avail.world) {
+                    return None;
+                }
+                db.inn(inn_id).ok().flatten().map(|inn| inn.price)
+            }
+            LookupBackend::Json { world, .. } => {
+                let world = world.as_deref()?;
+                world
+                    .inns()
+                    .iter()
+                    .find(|inn| inn.id == inn_id)
+                    .map(|inn| inn.price)
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
     pub(crate) fn playable_character_by_map_unit_id(
         &self,
         map_unit_id: i64,
     ) -> Option<(i64, Option<String>)> {
-        let playable = self.map_unit_playable.as_deref()?;
-        let resolved = playable.resolve_by_map_unit_id(map_unit_id)?;
-        let name = playable
-            .character_name_in(map_unit_id, MODEL_LANGUAGE)
-            .text
-            .and_then(|t| collapse_ws(&t));
-        Some((resolved.unit_id, name))
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_world,
+                ..
+            } => {
+                if !(*need_world && avail.map_unit_playable) {
+                    return None;
+                }
+                let resolved = db.playable_by_map_unit_id(map_unit_id).ok()??;
+                let name = resolve_db_zh_clean(db, &resolved.name);
+                Some((resolved.unit_id, name))
+            }
+            LookupBackend::Json {
+                map_unit_playable, ..
+            } => {
+                let playable = map_unit_playable.as_deref()?;
+                let resolved = playable.resolve_by_map_unit_id(map_unit_id)?;
+                let name = playable
+                    .character_name_in(map_unit_id, MODEL_LANGUAGE)
+                    .text
+                    .and_then(|t| collapse_ws(&t));
+                Some((resolved.unit_id, name))
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
     pub(crate) fn main_quest_title(&self, main_quest_id: i64) -> Option<String> {
-        let scenario = self.scenario.as_deref()?;
-        scenario.main_quest_by_id(main_quest_id)?;
-        scenario
-            .main_quest_title_in(main_quest_id, MODEL_LANGUAGE)
-            .text
-            .and_then(|t| collapse_ws(&t))
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_scenario,
+                ..
+            } => {
+                if !(*need_scenario && avail.scenario) {
+                    return None;
+                }
+                let mq = db.main_quest(main_quest_id).ok()??;
+                let raw_name = resolve_db_zh_raw(db, &mq.chapter_name)?;
+                collapse_ws(&format_db_main_quest_title(db, mq.chapter_no, &raw_name))
+            }
+            LookupBackend::Json { scenario, .. } => {
+                let scenario = scenario.as_deref()?;
+                scenario.main_quest_by_id(main_quest_id)?;
+                scenario
+                    .main_quest_title_in(main_quest_id, MODEL_LANGUAGE)
+                    .text
+                    .and_then(|t| collapse_ws(&t))
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
     pub(crate) fn quest_name(&self, quest_id: i64) -> Option<String> {
-        let world = self.world.as_deref()?;
-        if let Some(q) = world.quest_by_id(quest_id) {
-            return resolve_zh_clean(world.text_resolver(), &q.title);
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_world,
+                ..
+            } => {
+                if !(*need_world && avail.world) {
+                    return None;
+                }
+                if let Some(q) = db.quest(quest_id).ok().flatten() {
+                    return resolve_db_zh_clean(db, &q.title);
+                }
+                if let Some(qb) = db.quest_board(quest_id).ok().flatten() {
+                    return resolve_db_zh_clean(db, &qb.title);
+                }
+                None
+            }
+            LookupBackend::Json { world, .. } => {
+                let world = world.as_deref()?;
+                if let Some(q) = world.quest_by_id(quest_id) {
+                    return resolve_zh_clean(world.text_resolver(), &q.title);
+                }
+                if let Some(qb) = world.quest_board_by_id(quest_id) {
+                    return resolve_zh_clean(world.text_resolver(), &qb.title);
+                }
+                None
+            }
+            LookupBackend::Unavailable => None,
         }
-        if let Some(qb) = world.quest_board_by_id(quest_id) {
-            return resolve_zh_clean(world.text_resolver(), &qb.title);
-        }
-        None
     }
 
     pub(crate) fn chapter_name(&self, chapter_no: i64) -> Option<String> {
         if chapter_no == 0 {
             return Some("序章".to_owned());
         }
-        let scenario = self.scenario.as_deref()?;
-        scenario
-            .chapter_name(chapter_no)
-            .text
-            .and_then(|t| collapse_ws(&t))
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_scenario,
+                ..
+            } => {
+                if !(*need_scenario && avail.scenario) {
+                    return None;
+                }
+                let chapter = db.chapter(chapter_no).ok()??;
+                resolve_db_zh_clean(db, &chapter.name)
+            }
+            LookupBackend::Json { scenario, .. } => {
+                let scenario = scenario.as_deref()?;
+                scenario
+                    .chapter_name(chapter_no)
+                    .text
+                    .and_then(|t| collapse_ws(&t))
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
     pub(crate) fn active_main_scenario(&self, progress: i64) -> Option<ActiveMainScenario> {
-        let scenario = self.scenario.as_deref()?;
-        let current = scenario.current_main_scenario(progress)?;
-        let main_quest_title = current
-            .main_quest_id
-            .and_then(|qid| self.main_quest_title(qid));
-        let (row_key, goal, summary) = match &current.entry {
-            Some(entry) => {
-                let texts = scenario.resolve_main_scenario_texts(entry);
-                let goal = texts.text.text.and_then(|t| collapse_ws(&t));
-                let summary = texts.summary_text.text.and_then(|t| collapse_ws(&t));
-                (Some(entry.row_key.clone()), goal, summary)
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_scenario,
+                ..
+            } => {
+                if !(*need_scenario && avail.scenario) {
+                    return None;
+                }
+                let current = db.main_scenario_for_progress(progress).ok()??;
+                let main_quest_title = current
+                    .main_quest_id
+                    .and_then(|qid| self.main_quest_title(qid));
+                let (row_key, goal, summary) = match &current.entry {
+                    Some(entry) => (
+                        Some(entry.row_key.clone()),
+                        resolve_db_zh_clean(db, &entry.text),
+                        resolve_db_zh_clean(db, &entry.summary_text),
+                    ),
+                    None => (None, None, None),
+                };
+                let destinations = current
+                    .destination_map_ids
+                    .iter()
+                    .map(|&id| (id, self.map_name(id)))
+                    .collect();
+                Some(ActiveMainScenario {
+                    chapter_no: current.chapter_no,
+                    is_prologue: current.is_prologue,
+                    main_quest_id: current.main_quest_id,
+                    main_quest_title,
+                    row_key,
+                    min_progress: current.progress_start,
+                    next_progress: current.next_progress,
+                    goal,
+                    summary,
+                    destinations,
+                })
             }
-            None => (None, None, None),
-        };
-        let destinations = current
-            .destination_map_ids
-            .iter()
-            .map(|&id| (id, self.map_name(id)))
-            .collect();
-        Some(ActiveMainScenario {
-            chapter_no: current.chapter_no,
-            is_prologue: current.is_prologue,
-            main_quest_id: current.main_quest_id,
-            main_quest_title,
-            row_key,
-            min_progress: current.progress_start,
-            next_progress: current.next_progress,
-            goal,
-            summary,
-            destinations,
-        })
+            LookupBackend::Json { scenario, .. } => {
+                let scenario = scenario.as_deref()?;
+                let current = scenario.current_main_scenario(progress)?;
+                let main_quest_title = current
+                    .main_quest_id
+                    .and_then(|qid| self.main_quest_title(qid));
+                let (row_key, goal, summary) = match &current.entry {
+                    Some(entry) => {
+                        let texts = scenario.resolve_main_scenario_texts(entry);
+                        let goal = texts.text.text.and_then(|t| collapse_ws(&t));
+                        let summary = texts.summary_text.text.and_then(|t| collapse_ws(&t));
+                        (Some(entry.row_key.clone()), goal, summary)
+                    }
+                    None => (None, None, None),
+                };
+                let destinations = current
+                    .destination_map_ids
+                    .iter()
+                    .map(|&id| (id, self.map_name(id)))
+                    .collect();
+                Some(ActiveMainScenario {
+                    chapter_no: current.chapter_no,
+                    is_prologue: current.is_prologue,
+                    main_quest_id: current.main_quest_id,
+                    main_quest_title,
+                    row_key,
+                    min_progress: current.progress_start,
+                    next_progress: current.next_progress,
+                    goal,
+                    summary,
+                    destinations,
+                })
+            }
+            LookupBackend::Unavailable => None,
+        }
+    }
+
+    fn command_skill_name(&self, action_id: i64) -> Option<Option<String>> {
+        match &self.backend {
+            LookupBackend::Db {
+                db,
+                avail,
+                need_battle,
+                ..
+            } => {
+                if !(*need_battle && avail.command_skills) {
+                    return None;
+                }
+                let cmd = db.command_skill(action_id).ok()??;
+                if cmd.is_placeholder() {
+                    return None;
+                }
+                Some(resolve_db_zh_clean(db, &cmd.name))
+            }
+            LookupBackend::Json { command_skills, .. } => {
+                let commands = command_skills.as_deref()?;
+                commands.command_by_id(action_id)?;
+                let name = commands
+                    .command_name_in(action_id, MODEL_LANGUAGE)
+                    .text
+                    .and_then(|t| collapse_ws(&t));
+                Some(name)
+            }
+            LookupBackend::Unavailable => None,
+        }
     }
 
     pub(crate) fn resolve_battle_action(
@@ -325,13 +754,7 @@ impl LookupCtx {
                 kind: "unknown",
             };
         }
-        if let Some(commands) = self.command_skills.as_deref()
-            && commands.command_by_id(action_id).is_some()
-        {
-            let name = commands
-                .command_name_in(action_id, MODEL_LANGUAGE)
-                .text
-                .and_then(|t| collapse_ws(&t));
+        if let Some(name) = self.command_skill_name(action_id) {
             return ResolvedAction {
                 id: action_id,
                 name,
@@ -382,7 +805,7 @@ pub fn read_game_state_descriptor() -> ToolDescriptor {
 /// Execute `read_game_state`.
 pub async fn handle_read_game_state(
     channel: &FileChannel,
-    cache: &GameDataCache,
+    source: &GameDataSource,
     reveal_hidden_weaknesses: bool,
     args: Value,
 ) -> ToolOutput {
@@ -436,7 +859,7 @@ pub async fn handle_read_game_state(
     let need_scenario = selected.contains(&StateSection::Party)
         || selected.contains(&StateSection::Field)
         || selected.contains(&StateSection::Ui);
-    let lookup = LookupCtx::from_cache(cache, need_world, need_battle, need_scenario);
+    let lookup = LookupCtx::from_source(source, need_world, need_battle, need_scenario);
 
     let screen_kind = resolve_screen_kind(field_obj, battle_obj, ui_obj);
     let scene_summary = summarize_scene(
@@ -485,11 +908,11 @@ pub async fn handle_read_game_state(
         "sections": section_names,
         "reveal_hidden_weaknesses": reveal_hidden_weaknesses,
         "data_loaded": {
-            "world": lookup.world.is_some(),
-            "battle": lookup.battle.is_some(),
-            "scenario": lookup.scenario.is_some(),
-            "command_skills": lookup.command_skills.is_some(),
-            "map_unit_playable": lookup.map_unit_playable.is_some(),
+            "world": lookup.has_world(),
+            "battle": lookup.has_battle(),
+            "scenario": lookup.has_scenario(),
+            "command_skills": lookup.has_command_skills(),
+            "map_unit_playable": lookup.has_map_unit_playable(),
         },
         "state": Value::Object(sections_json),
         "bridge_errors": bridge_errors,

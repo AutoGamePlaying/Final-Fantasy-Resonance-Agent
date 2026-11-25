@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 
 use agp_game::{Content, ToolCategory, ToolDescriptor, ToolOutput};
+use agp_platform::FileChannel;
 use ffr_data::battle::{
     AvailableLocation, BattleData, Element, EnemyProfile, Resistance, ResolvedBattleGroup, Skill,
     SkillAttributeType, SkillCostType, SkillDamageType, SkillTargetType, TargetRelation,
@@ -22,12 +23,13 @@ use ffr_data::{
 };
 use serde_json::{Map, Value, json};
 
-use crate::data_cache::GameDataCache;
+use crate::data_cache::{GameDataCache, GameDataSource};
+use crate::data_tools_db::call_data_tool_db;
 
-const SEARCH_MAX_RESULTS: usize = 20;
+pub(crate) const SEARCH_MAX_RESULTS: usize = 20;
 
-/// Names of all data-category tools handled by this module.
-pub const DATA_TOOL_NAMES: [&str; 9] = [
+/// Names of all data-category tools handled by this module (`ffr-3`).
+pub const DATA_TOOL_NAMES: [&str; 15] = [
     "read_chapter",
     "read_map",
     "read_enemy",
@@ -37,6 +39,12 @@ pub const DATA_TOOL_NAMES: [&str; 9] = [
     "read_quest",
     "read_shop",
     "search_data",
+    "find_route",
+    "where_to_get",
+    "read_npc",
+    "read_talk",
+    "whats_near",
+    "query_game_db",
 ];
 
 /// Returns `true` if `name` is one of the static game-data tools.
@@ -68,7 +76,7 @@ pub fn data_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "read_map".to_owned(),
-            description: "按地图编号或运行时关卡名读取地图摘要，包含存档点能力、世界地图传送点、宝箱清单和设施/商店类型。"
+            description: "按地图编号或运行时关卡名读取地图详情，包含出口与目标地图、NPC、商店、宝箱内容与坐标、存档点位置/能力、传送地标及遇敌区域。"
                 .to_owned(),
             parameters: json!({
                 "type": "object",
@@ -91,7 +99,7 @@ pub fn data_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "read_enemy".to_owned(),
-            description: "按单位编号或简体中文名读取敌人摘要（HP、破防槽、弱点和抗性、是否 Boss、高危招式）。按名称匹配多个时列出候选供选择。"
+            description: "按单位编号或简体中文名读取敌人完整资料（HP、破防槽、弱点和抗性、掉落与偷窃、出没章节、所在战斗组、是否 Boss、高危招式）。按名称匹配多个时列出候选供选择。"
                 .to_owned(),
             parameters: json!({
                 "type": "object",
@@ -260,26 +268,210 @@ pub fn data_tool_descriptors() -> Vec<ToolDescriptor> {
             side_effects: false,
             timeout_ms: None,
         },
+        ToolDescriptor {
+            name: "find_route".to_owned(),
+            description: "规划从起点地图到终点地图的最短换图路线（支持普通出口与存档点传送），返回每步出口坐标、目标地图与落点坐标、旗标/进度条件及是否仅事件触发。起点和终点支持地图编号或简体中文名；重名时列出候选。"
+                .to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "from": {
+                        "oneOf": [
+                            { "type": "integer" },
+                            { "type": "string", "minLength": 1 }
+                        ],
+                        "description": "起点地图编号（整数）或简体中文地图名（字符串）。"
+                    },
+                    "to": {
+                        "oneOf": [
+                            { "type": "integer" },
+                            { "type": "string", "minLength": 1 }
+                        ],
+                        "description": "终点地图编号（整数）或简体中文地图名（字符串）。"
+                    }
+                },
+                "required": ["from", "to"],
+                "additionalProperties": false
+            }),
+            category: ToolCategory::Data,
+            side_effects: false,
+            timeout_ms: None,
+        },
+        ToolDescriptor {
+            name: "where_to_get".to_owned(),
+            description: "查询指定道具的全部静态获取途径：宝箱（地图、坐标、出现条件）、商店（地图、NPC、价格、条件）、敌人掉落和偷窃（概率、出没章节）与任务奖励。重名时列出候选。"
+                .to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "item_id": {
+                        "type": "integer",
+                        "description": "全局道具数字编号（与 name 二选一）。"
+                    },
+                    "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "道具简体中文名（与 item_id 二选一）。"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            category: ToolCategory::Data,
+            side_effects: false,
+            timeout_ms: None,
+        },
+        ToolDescriptor {
+            name: "read_npc".to_owned(),
+            description: "按「地图编号 + unique_id」、地图单位编号（map_unit_id）或名字查询 NPC 详情，返回名字、所在地图和坐标、出现条件、对话事件列表、售卖商品与价格及是否旅店。按名字匹配多个时列出候选。"
+                .to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "map_id": {
+                        "type": "integer",
+                        "description": "地图数字编号。按 unique_id 查询时必填；按 map_unit_id 或 name 查询时可选，用于限定地图。"
+                    },
+                    "unique_id": {
+                        "type": "integer",
+                        "description": "关卡内 NPC 对象 unique_id（须与 map_id 同时传入）。"
+                    },
+                    "map_unit_id": {
+                        "type": "integer",
+                        "description": "地图单位编号（DT_MapUnitAsset.ID，与 unique_id、name 三选一）。"
+                    },
+                    "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "NPC 中文名或内部名关键词（与 unique_id、map_unit_id 三选一）。"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            category: ToolCategory::Data,
+            side_effects: false,
+            timeout_ms: None,
+        },
+        ToolDescriptor {
+            name: "read_talk".to_owned(),
+            description: "按对话事件编号读取完整对话内容，返回台词（说话人与简体中文文本）、后续事件与选项分支、关联过场（时长、能否跳过）以及触发的战斗组。"
+                .to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "对话事件编号（CDT_TalkEventData_Prod 行键，如 C01_001_01）。"
+                    }
+                },
+                "required": ["event_id"],
+                "additionalProperties": false
+            }),
+            category: ToolCategory::Data,
+            side_effects: false,
+            timeout_ms: None,
+        },
+        ToolDescriptor {
+            name: "whats_near".to_owned(),
+            description: "查询指定位置半径内的 NPC、宝箱、出口、存档点、事件触发与遇敌区域，按距离排序并给出东南西北方向。默认从文件桥读取当前地图和角色坐标，也可显式传入 map_id 与 x/y（可选 z）。"
+                .to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "map_id": {
+                        "type": "integer",
+                        "description": "可选，地图数字编号；省略时从文件桥读取当前地图。"
+                    },
+                    "x": {
+                        "type": "number",
+                        "description": "可选，查询中心世界坐标 X（须与 y 同时传入）；省略时从文件桥读取当前角色坐标。"
+                    },
+                    "y": {
+                        "type": "number",
+                        "description": "可选，查询中心世界坐标 Y（须与 x 同时传入）；省略时从文件桥读取当前角色坐标。"
+                    },
+                    "z": {
+                        "type": "number",
+                        "description": "可选，查询中心世界坐标 Z；显式传 x/y 且省略 z 时按平面 2D 距离检索。"
+                    },
+                    "radius": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "description": "可选，搜索半径（UE 坐标单位，默认 2000）。"
+                    },
+                    "kinds": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["npc", "chest", "exit", "save_point", "event", "encounter_zone"]
+                        },
+                        "description": "可选，限定返回的对象类别列表；省略时返回全部 6 类。"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            category: ToolCategory::Data,
+            side_effects: false,
+            timeout_ms: None,
+        },
+        ToolDescriptor {
+            name: "query_game_db".to_owned(),
+            description: "对本地游戏数据库执行单条只读 SQL（SELECT/WITH/VALUES），最多返回 200 行、2 秒超时、输出超过约 20 KB 自动截断。可先读取资源 ffr://db/schema 了解全部表和列。"
+                .to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "sql": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "单条只读 SQL 查询语句（仅允许 SELECT / WITH / VALUES，禁止写语句和多条语句）。"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "description": "可选，最大返回行数（1..=200，默认 200）。"
+                    }
+                },
+                "required": ["sql"],
+                "additionalProperties": false
+            }),
+            category: ToolCategory::Data,
+            side_effects: false,
+            timeout_ms: None,
+        },
     ]
 }
 
 /// Dispatch one data-category tool call.
-pub fn call_data_tool(cache: &GameDataCache, name: &str, args: Value) -> ToolOutput {
+pub async fn call_data_tool(
+    channel: &FileChannel,
+    source: &GameDataSource,
+    name: &str,
+    args: Value,
+) -> ToolOutput {
     let Some(obj) = args.as_object() else {
         return tool_error(format!("工具 `{name}` 的参数必须是 JSON 对象"));
     };
 
-    let result = match name {
-        "read_chapter" => handle_read_chapter(cache, obj),
-        "read_map" => handle_read_map(cache, obj),
-        "read_enemy" => handle_read_enemy(cache, obj),
-        "read_battle_group" => handle_read_battle_group(cache, obj),
-        "read_skill" => handle_read_skill(cache, obj),
-        "read_item" => handle_read_item(cache, obj),
-        "read_quest" => handle_read_quest(cache, obj),
-        "read_shop" => handle_read_shop(cache, obj),
-        "search_data" => handle_search_data(cache, obj),
-        _ => Err(format!("未知数据工具 `{name}`")),
+    let result = match source {
+        GameDataSource::Db(db_cache) => call_data_tool_db(channel, db_cache, name, obj).await,
+        GameDataSource::Json(cache) => match name {
+            "read_chapter" => handle_read_chapter(cache, obj),
+            "read_map" => handle_read_map(cache, obj),
+            "read_enemy" => handle_read_enemy(cache, obj),
+            "read_battle_group" => handle_read_battle_group(cache, obj),
+            "read_skill" => handle_read_skill(cache, obj),
+            "read_item" => handle_read_item(cache, obj),
+            "read_quest" => handle_read_quest(cache, obj),
+            "read_shop" => handle_read_shop(cache, obj),
+            "search_data" => handle_search_data(cache, obj),
+            "find_route" | "where_to_get" | "read_npc" | "read_talk" | "whats_near"
+            | "query_game_db" => Err(format!(
+                "工具 `{name}` 需要本地 SQLite 游戏数据库（ffr-db），当前以 --data-dir 导出目录模式运行；请改用 --db 或默认 $FFR_DEPS/ffr/db/ffr.sqlite（可先运行 `ffr-db build` 构建数据库）"
+            )),
+            _ => Err(format!("未知数据工具 `{name}`")),
+        },
     };
 
     match result {
@@ -512,6 +704,7 @@ fn format_map_output(world: &WorldData, map: &MapInfo) -> ToolOutput {
                 .and_then(|item| resolve_zh_clean(world.text_resolver(), &item.name));
             json!({
                 "box_id": chest.id,
+                "unique_id": null,
                 "item_id": chest.item_id,
                 "item_name": item_name,
                 "item_num": chest.item_num,
@@ -519,6 +712,8 @@ fn format_map_output(world: &WorldData, map: &MapInfo) -> ToolOutput {
                 "is_trap": chest.is_trap,
                 "battle_group_id": chest.battle_group_id,
                 "battle_finish_event_id": chest.battle_finish_event_id,
+                "location": null,
+                "visible_condition": null,
             })
         })
         .collect();
@@ -552,9 +747,14 @@ fn format_map_output(world: &WorldData, map: &MapInfo) -> ToolOutput {
             "do_movement_encount": map.do_movement_encount,
             "encount_group_id": map.encount_group_id,
             "save_point": save_point_json,
+            "save_points": [],
             "teleportable": !teleport_points.is_empty(),
             "teleport_points": teleport_json,
+            "exits": [],
+            "npcs": [],
+            "shops": [],
             "treasure_boxes": treasures_json,
+            "encounter_zones": [],
             "shop_facilities": shop_facilities,
             "facilities": facilities_json,
         }),
@@ -570,13 +770,14 @@ fn handle_read_enemy(
     let name = optional_non_empty_str("read_enemy", args, "name")?;
 
     let battle = cache.battle()?;
+    let world = cache.world().ok();
     let chapter_index = cache.enemy_chapters().ok();
     match (unit_id, name) {
         (Some(id), None) => {
             let unit = battle
                 .unit_by_id(id)
                 .ok_or_else(|| format!("单位表中找不到编号为 {id} 的单位"))?;
-            format_enemy_output(&battle, unit, chapter_index.as_deref())
+            format_enemy_output(&battle, unit, world.as_deref(), chapter_index.as_deref())
         }
         (None, Some(query_name)) => {
             let matches = battle
@@ -600,7 +801,7 @@ fn handle_read_enemy(
                     let unit = battle
                         .unit_by_id(single.unit_id)
                         .ok_or_else(|| format!("单位表中找不到编号为 {} 的单位", single.unit_id))?;
-                    format_enemy_output(&battle, unit, chapter_index.as_deref())
+                    format_enemy_output(&battle, unit, world.as_deref(), chapter_index.as_deref())
                 }
                 many => Ok(format_enemy_candidates(query_name, many)),
             }
@@ -615,6 +816,7 @@ fn handle_read_enemy(
 fn format_enemy_output(
     battle: &BattleData,
     unit: &Unit,
+    world: Option<&WorldData>,
     chapter_index: Option<&ffr_data::battle::EnemyChapterIndex>,
 ) -> Result<ToolOutput, String> {
     let profile = unit.to_enemy_profile(battle.unit_ai_by_id(unit.id));
@@ -633,6 +835,31 @@ fn format_enemy_output(
     {
         let joined: Vec<String> = ch_list.iter().map(|ch| format!("第 {ch} 章")).collect();
         summary.push_str(&format!("\n出没章节：{}", joined.join("、")));
+    }
+
+    let lookup_item_name = |item_id: i64| -> Option<String> {
+        let w = world?;
+        let it = w.item_by_id(item_id)?;
+        resolve_zh_clean(w.text_resolver(), &it.name)
+    };
+    let (drops_json, steals_json, drop_line, steal_line) =
+        build_enemy_drops_and_steals(unit, lookup_item_name);
+    if let Some(line) = drop_line {
+        summary.push_str(&format!("\n{line}"));
+    }
+    if let Some(line) = steal_line {
+        summary.push_str(&format!("\n{line}"));
+    }
+
+    let mut groups: Vec<&ffr_data::battle::BattleGroup> = battle
+        .battle_groups
+        .iter()
+        .filter(|g| g.unit_ids.contains(&unit.id))
+        .collect();
+    groups.sort_by_key(|g| g.id);
+    let (battle_groups_json, groups_line) = format_enemy_battle_groups_slice(&groups);
+    if let Some(line) = groups_line {
+        summary.push_str(&format!("\n{line}"));
     }
 
     let high_risk_skills: Vec<Value> = profile
@@ -684,13 +911,96 @@ fn format_enemy_output(
             "break_damage_magnification": battle.break_calc.break_damage_magnification,
         },
         "high_risk_skills": high_risk_skills,
+        "drops": drops_json,
+        "steals": steals_json,
         "chapters": chapters,
+        "battle_groups": battle_groups_json,
     });
 
     Ok(tool_ok(summary, payload))
 }
 
-fn format_enemy_candidates(query: &str, matches: &[EnemyProfile]) -> ToolOutput {
+pub(crate) fn build_enemy_drops_and_steals<F>(
+    unit: &Unit,
+    mut resolve_item_name: F,
+) -> (Value, Value, Option<String>, Option<String>)
+where
+    F: FnMut(i64) -> Option<String>,
+{
+    let mut make_slot = |item_id: i64, rate: i64, label: &str| -> (Value, Option<String>) {
+        if item_id < 0 {
+            return (Value::Null, None);
+        }
+        let item_name = resolve_item_name(item_id);
+        let display = match &item_name {
+            Some(n) => format!("{n}（#{item_id}）"),
+            None => format!("道具 #{item_id}"),
+        };
+        (
+            json!({
+                "item_id": item_id,
+                "item_name": item_name,
+                "rate": rate,
+            }),
+            Some(format!("{label} {display} {rate}%")),
+        )
+    };
+
+    let (dn_json, dn_str) = make_slot(unit.drop_normal_item, unit.drop_normal_item_rate, "普通");
+    let (dr_json, dr_str) = make_slot(unit.drop_rare_item, unit.drop_rare_item_rate, "稀有");
+    let (sn_json, sn_str) = make_slot(unit.steal_normal_item, unit.steal_item_rate, "普通");
+    let (sr_json, sr_str) = make_slot(unit.steal_rare_item, unit.steal_item_rate, "稀有");
+
+    let drop_parts: Vec<String> = [dn_str, dr_str].into_iter().flatten().collect();
+    let steal_parts: Vec<String> = [sn_str, sr_str].into_iter().flatten().collect();
+
+    let drop_line = (!drop_parts.is_empty()).then(|| format!("掉落：{}", drop_parts.join("、")));
+    let steal_line = (!steal_parts.is_empty()).then(|| format!("偷窃：{}", steal_parts.join("、")));
+
+    (
+        json!({ "normal": dn_json, "rare": dr_json }),
+        json!({ "normal": sn_json, "rare": sr_json }),
+        drop_line,
+        steal_line,
+    )
+}
+
+pub(crate) fn format_enemy_battle_groups_slice(
+    groups: &[&ffr_data::battle::BattleGroup],
+) -> (Vec<Value>, Option<String>) {
+    let json_list: Vec<Value> = groups
+        .iter()
+        .map(|g| {
+            json!({
+                "group_id": g.id,
+                "is_boss": g.is_boss,
+                "can_escape": g.can_escape,
+                "is_bounty": g.is_bounty,
+                "ap": g.ap,
+            })
+        })
+        .collect();
+    if groups.is_empty() {
+        return (json_list, None);
+    }
+    let preview: Vec<String> = groups
+        .iter()
+        .take(12)
+        .map(|g| format!("#{}", g.id))
+        .collect();
+    let line = if groups.len() > 12 {
+        format!(
+            "所在战斗组：{} 等共 {} 组",
+            preview.join("、"),
+            groups.len()
+        )
+    } else {
+        format!("所在战斗组：{}", preview.join("、"))
+    };
+    (json_list, Some(line))
+}
+
+pub(crate) fn format_enemy_candidates(query: &str, matches: &[EnemyProfile]) -> ToolOutput {
     let mut lines = vec![format!(
         "名称「{query}」匹配到 {} 个敌人候选，请改用 `unit_id` 精确查询：",
         matches.len()
@@ -928,7 +1238,7 @@ fn format_skill_output(battle: &BattleData, skill: &Skill) -> ToolOutput {
     )
 }
 
-fn format_skill_candidates(query: &str, matches: &[&Skill]) -> ToolOutput {
+pub(crate) fn format_skill_candidates(query: &str, matches: &[&Skill]) -> ToolOutput {
     let mut lines = vec![format!(
         "名称「{query}」匹配到 {} 个技能候选，请改用 `skill_id` 精确查询：",
         matches.len()
@@ -1049,7 +1359,7 @@ fn format_item_output(world: &WorldData, item: &Item) -> ToolOutput {
     )
 }
 
-fn format_item_candidates(query: &str, matches: &[&Item]) -> ToolOutput {
+pub(crate) fn format_item_candidates(query: &str, matches: &[&Item]) -> ToolOutput {
     let mut lines = vec![format!(
         "名称「{query}」匹配到 {} 个道具候选，请改用 `item_id` 精确查询：",
         matches.len()
@@ -1248,7 +1558,7 @@ fn format_quest_output(world: &WorldData, quest: &Quest) -> ToolOutput {
     )
 }
 
-fn format_quest_candidates(query: &str, matches: &[&Quest]) -> ToolOutput {
+pub(crate) fn format_quest_candidates(query: &str, matches: &[&Quest]) -> ToolOutput {
     let mut lines = vec![format!(
         "标题「{query}」匹配到 {} 个支线任务候选，请改用 `quest_id` 精确查询：",
         matches.len()
@@ -1452,7 +1762,7 @@ fn format_shop_output(world: &WorldData, shop: &Shop) -> ToolOutput {
     )
 }
 
-fn format_shop_candidates(query: &str, matches: &[&Shop]) -> ToolOutput {
+pub(crate) fn format_shop_candidates(query: &str, matches: &[&Shop]) -> ToolOutput {
     let mut lines = vec![format!(
         "店名「{query}」匹配到 {} 家商店候选，请改用 `shop_id` 精确查询：",
         matches.len()
@@ -1482,7 +1792,7 @@ fn format_shop_candidates(query: &str, matches: &[&Shop]) -> ToolOutput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum SearchKind {
+pub(crate) enum SearchKind {
     Chapter,
     Map,
     Enemy,
@@ -1516,7 +1826,7 @@ impl SearchKind {
         }
     }
 
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Chapter => "chapter",
             Self::Map => "map",
@@ -1528,7 +1838,7 @@ impl SearchKind {
         }
     }
 
-    const fn label_zh(self) -> &'static str {
+    pub(crate) const fn label_zh(self) -> &'static str {
         match self {
             Self::Chapter => "章节",
             Self::Map => "地图",
@@ -1541,12 +1851,12 @@ impl SearchKind {
     }
 }
 
-struct SearchHit {
-    rank: u8,
-    kind: SearchKind,
-    id: i64,
-    name: String,
-    summary: String,
+pub(crate) struct SearchHit {
+    pub(crate) rank: u8,
+    pub(crate) kind: SearchKind,
+    pub(crate) id: i64,
+    pub(crate) name: String,
+    pub(crate) summary: String,
 }
 
 fn handle_search_data(
@@ -1808,7 +2118,9 @@ fn handle_search_data(
     Ok(tool_ok(lines.join("\n"), payload))
 }
 
-fn parse_search_kinds(args: &Map<String, Value>) -> Result<(Vec<SearchKind>, bool), String> {
+pub(crate) fn parse_search_kinds(
+    args: &Map<String, Value>,
+) -> Result<(Vec<SearchKind>, bool), String> {
     let Some(raw) = args.get("kinds") else {
         return Ok((SearchKind::ALL.to_vec(), false));
     };
@@ -1841,7 +2153,7 @@ fn parse_search_kinds(args: &Map<String, Value>) -> Result<(Vec<SearchKind>, boo
     Ok((parsed, true))
 }
 
-fn match_rank(candidate: &str, needle: &str) -> Option<u8> {
+pub(crate) fn match_rank(candidate: &str, needle: &str) -> Option<u8> {
     if candidate == needle {
         Some(0)
     } else if candidate.starts_with(needle) {
@@ -1855,17 +2167,17 @@ fn match_rank(candidate: &str, needle: &str) -> Option<u8> {
 
 // ---- Shared formatting & argument validation helpers ----
 
-fn tool_ok(summary: String, payload: Value) -> ToolOutput {
+pub(crate) fn tool_ok(summary: String, payload: Value) -> ToolOutput {
     ToolOutput::new(vec![Content::text(summary), Content::json(payload)])
 }
 
-fn tool_error(message: String) -> ToolOutput {
+pub(crate) fn tool_error(message: String) -> ToolOutput {
     let mut output = ToolOutput::new(vec![Content::text(message)]);
     output.is_error = true;
     output
 }
 
-fn reject_unknown_keys(
+pub(crate) fn reject_unknown_keys(
     tool: &str,
     args: &Map<String, Value>,
     allowed: &[&str],
@@ -1885,7 +2197,11 @@ fn reject_unknown_keys(
     }
 }
 
-fn optional_i64(tool: &str, args: &Map<String, Value>, key: &str) -> Result<Option<i64>, String> {
+pub(crate) fn optional_i64(
+    tool: &str,
+    args: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<i64>, String> {
     let Some(value) = args.get(key) else {
         return Ok(None);
     };
@@ -1898,12 +2214,16 @@ fn optional_i64(tool: &str, args: &Map<String, Value>, key: &str) -> Result<Opti
         .ok_or_else(|| format!("工具 `{tool}` 的参数 `{key}` 必须是整数"))
 }
 
-fn required_i64(tool: &str, args: &Map<String, Value>, key: &str) -> Result<i64, String> {
+pub(crate) fn required_i64(
+    tool: &str,
+    args: &Map<String, Value>,
+    key: &str,
+) -> Result<i64, String> {
     optional_i64(tool, args, key)?
         .ok_or_else(|| format!("工具 `{tool}` 缺少必需的整数参数 `{key}`"))
 }
 
-fn optional_non_empty_str<'a>(
+pub(crate) fn optional_non_empty_str<'a>(
     tool: &str,
     args: &'a Map<String, Value>,
     key: &str,
@@ -1924,7 +2244,7 @@ fn optional_non_empty_str<'a>(
     Ok(Some(trimmed))
 }
 
-fn required_non_empty_str<'a>(
+pub(crate) fn required_non_empty_str<'a>(
     tool: &str,
     args: &'a Map<String, Value>,
     key: &str,
@@ -2093,7 +2413,7 @@ pub(crate) fn element_zh(element: Element) -> &'static str {
     element.localized_name(MODEL_LANGUAGE).unwrap_or("未知属性")
 }
 
-fn element_code(element: Element) -> &'static str {
+pub(crate) fn element_code(element: Element) -> &'static str {
     match element {
         Element::Fire => "Fire",
         Element::Ice => "Ice",
@@ -2111,11 +2431,11 @@ pub(crate) fn elements_zh_vec(elements: &[Element]) -> Vec<&'static str> {
     elements.iter().copied().map(element_zh).collect()
 }
 
-fn elements_code_vec(elements: &[Element]) -> Vec<&'static str> {
+pub(crate) fn elements_code_vec(elements: &[Element]) -> Vec<&'static str> {
     elements.iter().copied().map(element_code).collect()
 }
 
-fn join_elements_zh(elements: &[Element]) -> String {
+pub(crate) fn join_elements_zh(elements: &[Element]) -> String {
     if elements.is_empty() {
         "无".to_owned()
     } else {
@@ -2123,7 +2443,7 @@ fn join_elements_zh(elements: &[Element]) -> String {
     }
 }
 
-fn unit_category_code(category: UnitCategory) -> &'static str {
+pub(crate) fn unit_category_code(category: UnitCategory) -> &'static str {
     match category {
         UnitCategory::Playable => "Playable",
         UnitCategory::Enemy => "Enemy",
@@ -2133,7 +2453,7 @@ fn unit_category_code(category: UnitCategory) -> &'static str {
     }
 }
 
-fn damage_type_zh(kind: SkillDamageType) -> &'static str {
+pub(crate) fn damage_type_zh(kind: SkillDamageType) -> &'static str {
     match kind {
         SkillDamageType::Physic => "物理伤害",
         SkillDamageType::Magic => "魔法伤害",
@@ -2149,7 +2469,7 @@ pub(crate) fn damage_type_code(kind: SkillDamageType) -> &'static str {
     }
 }
 
-fn skill_attr_zh(attr: SkillAttributeType) -> &'static str {
+pub(crate) fn skill_attr_zh(attr: SkillAttributeType) -> &'static str {
     match attr {
         SkillAttributeType::Fight => "普通攻击",
         SkillAttributeType::ChaseAttack => "追击",
@@ -2170,7 +2490,7 @@ fn skill_attr_zh(attr: SkillAttributeType) -> &'static str {
     }
 }
 
-fn skill_attr_code(attr: SkillAttributeType) -> &'static str {
+pub(crate) fn skill_attr_code(attr: SkillAttributeType) -> &'static str {
     match attr {
         SkillAttributeType::Fight => "Fight",
         SkillAttributeType::ChaseAttack => "ChaseAttack",
@@ -2204,7 +2524,7 @@ pub(crate) fn cost_type_code(cost_type: SkillCostType) -> &'static str {
     }
 }
 
-fn format_skill_cost(cost: i64, cost_type: SkillCostType) -> String {
+pub(crate) fn format_skill_cost(cost: i64, cost_type: SkillCostType) -> String {
     if cost == 0 && cost_type == SkillCostType::Mp {
         return "无消耗".to_owned();
     }
@@ -2220,7 +2540,7 @@ fn format_skill_cost(cost: i64, cost_type: SkillCostType) -> String {
     }
 }
 
-fn target_type_code(target_type: SkillTargetType) -> &'static str {
+pub(crate) fn target_type_code(target_type: SkillTargetType) -> &'static str {
     match target_type {
         SkillTargetType::Single => "Single",
         SkillTargetType::Group => "Group",
@@ -2231,14 +2551,14 @@ fn target_type_code(target_type: SkillTargetType) -> &'static str {
     }
 }
 
-fn target_relation_code(relation: TargetRelation) -> &'static str {
+pub(crate) fn target_relation_code(relation: TargetRelation) -> &'static str {
     match relation {
         TargetRelation::Enemies => "Enemies",
         TargetRelation::Friendlies => "Friendlies",
     }
 }
 
-fn target_state_code(state: TargetState) -> &'static str {
+pub(crate) fn target_state_code(state: TargetState) -> &'static str {
     match state {
         TargetState::Alive => "Alive",
         TargetState::Dead => "Dead",
@@ -2273,7 +2593,7 @@ pub(crate) fn format_skill_target(
     }
 }
 
-fn available_location_zh(loc: AvailableLocation) -> &'static str {
+pub(crate) fn available_location_zh(loc: AvailableLocation) -> &'static str {
     match loc {
         AvailableLocation::Anywhere => "任意场合",
         AvailableLocation::BattleOnly => "仅战斗",
@@ -2287,7 +2607,7 @@ pub(crate) fn available_location_code(loc: AvailableLocation) -> &'static str {
     }
 }
 
-fn item_category_zh(category: ItemCategory) -> &'static str {
+pub(crate) fn item_category_zh(category: ItemCategory) -> &'static str {
     match category {
         ItemCategory::Consumable => "消耗品",
         ItemCategory::Seed => "种子",
@@ -2298,7 +2618,7 @@ fn item_category_zh(category: ItemCategory) -> &'static str {
     }
 }
 
-fn facility_zh(raw: &str) -> &str {
+pub(crate) fn facility_zh(raw: &str) -> &str {
     match raw {
         "eMapInteractType::Inn" => "旅店",
         "eMapInteractType::Shop" => "道具店",

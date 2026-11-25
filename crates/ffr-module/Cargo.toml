@@ -12,8 +12,12 @@ anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 ffr-data = { path = "../ffr-data" }
+ffr-db = { path = "../ffr-db" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
+
+[dev-dependencies]
+rusqlite.workspace = true
 
 [[bin]]
 name = "ffr-module"
