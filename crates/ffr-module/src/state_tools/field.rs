@@ -76,8 +76,8 @@ pub(crate) fn render_field(
         let static_box = map_id
             .zip(chest_id)
             .and_then(|(mid, cid)| lookup.treasure_box(mid, cid));
-        let is_trap = static_box.map(|tb| tb.is_trap);
-        let battle_group_id = static_box.and_then(|tb| tb.battle_group_id);
+        let is_trap = static_box.as_ref().map(|tb| tb.is_trap);
+        let battle_group_id = static_box.as_ref().and_then(|tb| tb.battle_group_id);
         let chest_loc = format_location(obj_object(chest, "location"));
 
         let status = match is_open {
