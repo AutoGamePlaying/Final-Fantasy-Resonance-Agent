@@ -1,0 +1,169 @@
+{
+  "v": 1,
+  "session": "fixture-shop-v1",
+  "seq": 40,
+  "clock_ms": 20000,
+  "data": {
+    "world": "World /Game/Map/Town/01Fake/Town_01Fake_01_PL.Town_01Fake_01_PL",
+    "map": "Town_01Fake_01_PL",
+    "player_controller_class": "Class /Script/mucha.CPP_MuchaPlayerController",
+    "pawn_class": "BlueprintGeneratedClass /Game/Blueprint/Map/BP_MapUnit_Player.BP_MapUnit_Player_C",
+    "game_mode_class": "Class /Script/mucha.CPP_MuchaGameModeField",
+    "game_instance_class": "Class /Script/mucha.CPP_MuchaGameInstance",
+    "pawn_location": { "x": 85.0, "y": 110.0, "z": 0.0 },
+    "field": {
+      "map_id": 2001,
+      "area_id": 0,
+      "is_loading": false,
+      "in_battle": false,
+      "in_event": true,
+      "in_dialog": false,
+      "in_menu": false,
+      "can_control": false,
+      "camera_deg": 90.0,
+      "camera_internal_rotation": false,
+      "player": {
+        "location": { "x": 85.0, "y": 110.0, "z": 0.0 },
+        "visible": true,
+        "unit_id": 10,
+        "direction": "East",
+        "direction_deg": 90.0,
+        "movement_method": "Walking",
+        "speed_2d": 0.0
+      },
+      "interact_target": {
+        "kind": "npc",
+        "unique_id": 302,
+        "event_id": null,
+        "interact_type": "Shop",
+        "location": { "x": 110.0, "y": 110.0, "z": 0.0 },
+        "shop_id": 1
+      },
+      "quest_targets": {
+        "main_quest_id": 1001,
+        "preferred_quest_id": 10,
+        "destination_map_ids": [3001]
+      },
+      "unlocked_landmarks": [2001, 3001],
+      "chests": [],
+      "save_points": [],
+      "transitions_and_npcs": {
+        "triggers": [],
+        "npcs": [
+          {
+            "unique_id": 302,
+            "unit_id": 101,
+            "interact_type": "Shop",
+            "shop_id": 1,
+            "inn_id": null,
+            "location": { "x": 110.0, "y": 110.0, "z": 0.0 }
+          }
+        ]
+      }
+    },
+    "battle": {
+      "in_battle": false,
+      "task_class": "CPP_MapTaskMain",
+      "in_talk_event": true,
+      "in_tutorial": false,
+      "phase": null,
+      "is_event": null,
+      "is_ui_visible": null,
+      "working_job_count": null,
+      "current_actor_uid": null,
+      "timeline": null,
+      "risk_uids": null,
+      "cmd": null,
+      "units": null,
+      "result": null
+    },
+    "ui": {
+      "screen_kind": "shop",
+      "active_layer": "UI.Layer.System",
+      "active_widget": "WBP_SHOP_Layout_C",
+      "action_guide_tag": "ActionGuide.Shop",
+      "input_blocked": [],
+      "movie": null,
+      "talk": null,
+      "choice": null,
+      "tutorial": null,
+      "menu": null,
+      "shop": {
+        "shop_id": 1,
+        "shop_type": "ToolShop",
+        "scene_stack": ["Command", "Shop"],
+        "is_buy": true,
+        "category_index": 0,
+        "categories": ["Consumables"],
+        "cmd_focus_index": 0,
+        "item_focus_index": 1,
+        "tooltip_item_id": 500,
+        "total_amount": 300,
+        "items": [
+          {
+            "id": 1,
+            "name": "清露草药",
+            "price": 50,
+            "owned": 5,
+            "stock": -1,
+            "limit": -1
+          },
+          {
+            "id": 500,
+            "name": "旅人帐篷",
+            "price": 300,
+            "owned": 2,
+            "stock": 3,
+            "limit": 3
+          }
+        ]
+      },
+      "save_ui": null,
+      "battle_result": null
+    },
+    "party": {
+      "save_ready": true,
+      "money": 1250,
+      "play_time": 1950.0,
+      "party_ids": [9001],
+      "guest_unit_id": null,
+      "party": [
+        {
+          "unit_id": 9001,
+          "hp": 320,
+          "max_hp": 320,
+          "mp": 60,
+          "max_mp": 60,
+          "level": 5,
+          "exp": 420,
+          "weapon_id": 10100,
+          "armor_id": null,
+          "accessory_ids": [],
+          "vision_id": 13017,
+          "join_status": 0
+        }
+      ],
+      "party_stats": null,
+      "inventory": {
+        "count": 3,
+        "total_qty": 8,
+        "hash": "1a2b3c4d",
+        "changed": []
+      },
+      "progress": 1020,
+      "chapter": 1,
+      "destination_map_ids": [3001],
+      "event_flags": {
+        "total": 2048,
+        "true_count": 4,
+        "hash": "9f8e7d6c",
+        "added": [],
+        "removed": []
+      },
+      "main_quest_id": 1001,
+      "last_saved_slot": 1
+    },
+    "errors": [],
+    "bridge_version": "1"
+  }
+}

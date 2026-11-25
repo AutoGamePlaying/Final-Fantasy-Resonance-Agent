@@ -1,0 +1,149 @@
+{
+  "v": 1,
+  "session": "fixture-talk-v1",
+  "seq": 30,
+  "clock_ms": 15000,
+  "data": {
+    "world": "World /Game/Map/Town/01Fake/Town_01Fake_01_PL.Town_01Fake_01_PL",
+    "map": "Town_01Fake_01_PL",
+    "player_controller_class": "Class /Script/mucha.CPP_MuchaPlayerController",
+    "pawn_class": "BlueprintGeneratedClass /Game/Blueprint/Map/BP_MapUnit_Player.BP_MapUnit_Player_C",
+    "game_mode_class": "Class /Script/mucha.CPP_MuchaGameModeField",
+    "game_instance_class": "Class /Script/mucha.CPP_MuchaGameInstance",
+    "pawn_location": { "x": 15.0, "y": 42.0, "z": 0.0 },
+    "field": {
+      "map_id": 2001,
+      "area_id": 0,
+      "is_loading": false,
+      "in_battle": false,
+      "in_event": true,
+      "in_dialog": false,
+      "in_menu": false,
+      "can_control": false,
+      "camera_deg": 180.0,
+      "camera_internal_rotation": false,
+      "player": {
+        "location": { "x": 15.0, "y": 42.0, "z": 0.0 },
+        "visible": true,
+        "unit_id": 10,
+        "direction": "South",
+        "direction_deg": 180.0,
+        "movement_method": "Walking",
+        "speed_2d": 0.0
+      },
+      "interact_target": {
+        "kind": "npc",
+        "unique_id": 301,
+        "event_id": "Ev_FakeTown_Intro",
+        "interact_type": "Talk",
+        "location": { "x": 15.0, "y": 72.0, "z": 0.0 }
+      },
+      "quest_targets": {
+        "main_quest_id": 1001,
+        "preferred_quest_id": 10,
+        "destination_map_ids": [3001]
+      },
+      "unlocked_landmarks": [2001, 3001],
+      "chests": [],
+      "save_points": [],
+      "transitions_and_npcs": {
+        "triggers": [],
+        "npcs": [
+          {
+            "unique_id": 301,
+            "unit_id": 100,
+            "interact_type": "Talk",
+            "shop_id": null,
+            "inn_id": null,
+            "location": { "x": 15.0, "y": 72.0, "z": 0.0 }
+          }
+        ]
+      }
+    },
+    "battle": {
+      "in_battle": false,
+      "task_class": "CPP_MapTaskMain",
+      "in_talk_event": true,
+      "in_tutorial": false,
+      "phase": null,
+      "is_event": null,
+      "is_ui_visible": null,
+      "working_job_count": null,
+      "current_actor_uid": null,
+      "timeline": null,
+      "risk_uids": null,
+      "cmd": null,
+      "units": null,
+      "result": null
+    },
+    "ui": {
+      "screen_kind": "talk",
+      "active_layer": "UI.Layer.Event",
+      "active_widget": "WBP_TalkEventLayout_C",
+      "action_guide_tag": "ActionGuide.Event.Talk",
+      "input_blocked": [],
+      "movie": null,
+      "talk": {
+        "event_id": "Ev_FakeTown_Intro",
+        "window_class": "WBP_TalkWindow_C",
+        "is_cutscene": false,
+        "speaker": "灯塔守卫",
+        "text": "欢迎来到微风港镇，洞窟深处似乎有异动。",
+        "waiting_key": true,
+        "text_finished": true,
+        "can_skip": true,
+        "is_auto": false
+      },
+      "choice": null,
+      "tutorial": null,
+      "menu": null,
+      "shop": null,
+      "save_ui": null,
+      "battle_result": null
+    },
+    "party": {
+      "save_ready": true,
+      "money": 1250,
+      "play_time": 1900.0,
+      "party_ids": [9001],
+      "guest_unit_id": null,
+      "party": [
+        {
+          "unit_id": 9001,
+          "hp": 320,
+          "max_hp": 320,
+          "mp": 60,
+          "max_mp": 60,
+          "level": 5,
+          "exp": 420,
+          "weapon_id": 10100,
+          "armor_id": null,
+          "accessory_ids": [],
+          "vision_id": 13017,
+          "join_status": 0
+        }
+      ],
+      "party_stats": null,
+      "inventory": {
+        "count": 3,
+        "total_qty": 8,
+        "hash": "1a2b3c4d",
+        "changed": []
+      },
+      "progress": 1020,
+      "chapter": 1,
+      "destination_map_ids": [3001],
+      "event_flags": {
+        "total": 2048,
+        "true_count": 4,
+        "hash": "9f8e7d6c",
+        "added": [],
+        "removed": []
+      },
+      "main_quest_id": 1001,
+      "last_saved_slot": 1
+    },
+    "errors": [],
+    "bridge_version": "1"
+  }
+}

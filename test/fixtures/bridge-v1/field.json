@@ -1,0 +1,184 @@
+{
+  "v": 1,
+  "session": "fixture-field-v1",
+  "seq": 10,
+  "clock_ms": 5000,
+  "data": {
+    "world": "World /Game/Map/Dng/01Fake/Dng_01Fake_43_PL.Dng_01Fake_43_PL",
+    "map": "Dng_01Fake_43_PL",
+    "player_controller_class": "Class /Script/mucha.CPP_MuchaPlayerController",
+    "pawn_class": "BlueprintGeneratedClass /Game/Blueprint/Map/BP_MapUnit_Player.BP_MapUnit_Player_C",
+    "game_mode_class": "Class /Script/mucha.CPP_MuchaGameModeField",
+    "game_instance_class": "Class /Script/mucha.CPP_MuchaGameInstance",
+    "pawn_location": { "x": 120.5, "y": -340.0, "z": 10.0 },
+    "field": {
+      "map_id": 3001,
+      "area_id": 1,
+      "is_loading": false,
+      "in_battle": false,
+      "in_event": false,
+      "in_dialog": false,
+      "in_menu": false,
+      "can_control": true,
+      "camera_deg": 0.0,
+      "camera_internal_rotation": false,
+      "player": {
+        "location": { "x": 120.5, "y": -340.0, "z": 10.0 },
+        "visible": true,
+        "unit_id": 10,
+        "direction": "North",
+        "direction_deg": 0.0,
+        "movement_method": "Walking",
+        "speed_2d": 0.0
+      },
+      "interact_target": {
+        "kind": "treasure_box",
+        "unique_id": 501,
+        "event_id": null,
+        "interact_type": "Treasure",
+        "location": { "x": 140.0, "y": -340.0, "z": 10.0 },
+        "is_open": false
+      },
+      "quest_targets": {
+        "main_quest_id": 1001,
+        "preferred_quest_id": 10,
+        "destination_map_ids": [3001]
+      },
+      "unlocked_landmarks": [2001, 3001],
+      "chests": [
+        {
+          "unique_id": 501,
+          "chest_id": 0,
+          "is_open": false,
+          "item_id": 1,
+          "item_num": 2,
+          "money": -1,
+          "location": { "x": 140.0, "y": -340.0, "z": 10.0 }
+        },
+        {
+          "unique_id": 502,
+          "chest_id": 1,
+          "is_open": true,
+          "item_id": -1,
+          "item_num": 0,
+          "money": 500,
+          "location": { "x": 420.0, "y": -110.0, "z": 10.0 }
+        }
+      ],
+      "save_points": [
+        {
+          "unique_id": 601,
+          "type": "None",
+          "is_teleport": true,
+          "can_teleport": true,
+          "target_map_id": 3001,
+          "target_point_id": 2,
+          "location": { "x": 80.0, "y": -200.0, "z": 10.0 }
+        }
+      ],
+      "transitions_and_npcs": {
+        "triggers": [
+          {
+            "unique_id": 701,
+            "map_id": 2001,
+            "point_id": 1,
+            "is_same_map": false,
+            "is_auto": true,
+            "location": { "x": 0.0, "y": -500.0, "z": 10.0 }
+          }
+        ],
+        "npcs": []
+      }
+    },
+    "battle": {
+      "in_battle": false,
+      "task_class": "CPP_MapTaskMain",
+      "in_talk_event": false,
+      "in_tutorial": false,
+      "phase": null,
+      "is_event": null,
+      "is_ui_visible": null,
+      "working_job_count": null,
+      "current_actor_uid": null,
+      "timeline": null,
+      "risk_uids": null,
+      "cmd": null,
+      "units": null,
+      "result": null
+    },
+    "ui": {
+      "screen_kind": "field",
+      "active_layer": "UI.Layer.Game",
+      "active_widget": "WBP_FieldLayout_C",
+      "action_guide_tag": "ActionGuide.Field.Interact",
+      "input_blocked": [],
+      "movie": null,
+      "talk": null,
+      "choice": null,
+      "tutorial": null,
+      "menu": null,
+      "shop": null,
+      "save_ui": null,
+      "battle_result": null
+    },
+    "party": {
+      "save_ready": true,
+      "money": 1250,
+      "play_time": 1829.5,
+      "party_ids": [9001],
+      "guest_unit_id": null,
+      "party": [
+        {
+          "unit_id": 9001,
+          "hp": 280,
+          "max_hp": 320,
+          "mp": 45,
+          "max_mp": 60,
+          "level": 5,
+          "exp": 420,
+          "weapon_id": 10100,
+          "armor_id": null,
+          "accessory_ids": [],
+          "vision_id": 13017,
+          "join_status": 0
+        }
+      ],
+      "party_stats": {
+        "9001": {
+          "attack": 48,
+          "defence": 35,
+          "intelligence": 28,
+          "mind": 30,
+          "agility": 18,
+          "equip_cost": 10,
+          "max_equip_cost": 100,
+          "physical_attack": 80,
+          "physical_defense": 35,
+          "magical_attack": 38,
+          "magical_defense": 30,
+          "divine": 10
+        }
+      },
+      "inventory": {
+        "count": 3,
+        "total_qty": 8,
+        "hash": "1a2b3c4d",
+        "changed": []
+      },
+      "progress": 1020,
+      "chapter": 1,
+      "destination_map_ids": [3001],
+      "event_flags": {
+        "total": 2048,
+        "true_count": 4,
+        "hash": "9f8e7d6c",
+        "added": [],
+        "removed": []
+      },
+      "main_quest_id": 1001,
+      "last_saved_slot": 1
+    },
+    "errors": [],
+    "bridge_version": "1"
+  }
+}
