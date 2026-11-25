@@ -289,7 +289,7 @@ export function createTextResolver(options: TextResolverOptions = {}): TextResol
       const result: CachedCatalogResult = missingFile
         ? {
             status: "not-found",
-            errorReason: `缺少语言 ${language} 的本地化表（可运行 tools/ffr-export/run.sh locres --lang ${language} 导出到 Localization/${language}.json）`,
+            errorReason: `缺少语言 ${language} 的本地化表（可运行 ../final-fantasy-resonance-export/scripts/run.sh locres --lang ${language} 导出到 Localization/${language}.json）`,
           }
         : {
             status: "error",

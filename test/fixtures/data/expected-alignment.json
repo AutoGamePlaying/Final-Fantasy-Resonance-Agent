@@ -92,7 +92,7 @@
         "text": null,
         "lang": null,
         "requestedLanguage": "ko",
-        "reason": "缺少语言 ko 的本地化表（可运行 tools/ffr-export/run.sh locres --lang ko 导出到 Localization/ko.json）",
+        "reason": "缺少语言 ko 的本地化表（可运行 ../final-fantasy-resonance-export/scripts/run.sh locres --lang ko 导出到 Localization/ko.json）",
         "source": "missing"
       }
     },
@@ -104,7 +104,7 @@
         "text": "はじまりの森",
         "lang": "ja",
         "requestedLanguage": "ko",
-        "reason": "缺少语言 ko 的本地化表（可运行 tools/ffr-export/run.sh locres --lang ko 导出到 Localization/ko.json），已回落到源语言 ja",
+        "reason": "缺少语言 ko 的本地化表（可运行 ../final-fantasy-resonance-export/scripts/run.sh locres --lang ko 导出到 Localization/ko.json），已回落到源语言 ja",
         "source": "string-table"
       }
     },
@@ -670,7 +670,7 @@
         "text": null,
         "lang": null,
         "requestedLanguage": "ko",
-        "reason": "缺少语言 ko 的本地化表（可运行 tools/ffr-export/run.sh locres --lang ko 导出到 Localization/ko.json）",
+        "reason": "缺少语言 ko 的本地化表（可运行 ../final-fantasy-resonance-export/scripts/run.sh locres --lang ko 导出到 Localization/ko.json）",
         "source": "missing"
       }
     },
@@ -686,7 +686,7 @@
         "text": "はじまりの森",
         "lang": "ja",
         "requestedLanguage": "ko",
-        "reason": "缺少语言 ko 的本地化表（可运行 tools/ffr-export/run.sh locres --lang ko 导出到 Localization/ko.json），已回落到源语言 ja",
+        "reason": "缺少语言 ko 的本地化表（可运行 ../final-fantasy-resonance-export/scripts/run.sh locres --lang ko 导出到 Localization/ko.json），已回落到源语言 ja",
         "source": "string-table"
       }
     },
@@ -883,7 +883,7 @@
         "text": null,
         "lang": null,
         "requestedLanguage": "ko",
-        "reason": "缺少语言 ko 的本地化表（可运行 tools/ffr-export/run.sh locres --lang ko 导出到 Localization/ko.json）",
+        "reason": "缺少语言 ko 的本地化表（可运行 ../final-fantasy-resonance-export/scripts/run.sh locres --lang ko 导出到 Localization/ko.json）",
         "source": "missing"
       }
     },
@@ -900,7 +900,7 @@
         "text": "デモ内联",
         "lang": "ja",
         "requestedLanguage": "ko",
-        "reason": "缺少语言 ko 的本地化表（可运行 tools/ffr-export/run.sh locres --lang ko 导出到 Localization/ko.json），已回落到源语言 ja",
+        "reason": "缺少语言 ko 的本地化表（可运行 ../final-fantasy-resonance-export/scripts/run.sh locres --lang ko 导出到 Localization/ko.json），已回落到源语言 ja",
         "source": "inline-source"
       }
     },

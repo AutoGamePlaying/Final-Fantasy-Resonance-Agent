@@ -299,7 +299,7 @@ fn real_export_world_tables_and_level_name_reverse_lookup() {
     let map_file = datatable_dir(&export_root).join("Map/CDT_MapData_Prod.json");
     if !map_file.is_file() {
         eprintln!(
-            "跳过真实导出世界数据测试：未找到 {}（设置 FFR_DEPS 或先运行 tools/ffr-export export）",
+            "跳过真实导出世界数据测试：未找到 {}（设置 FFR_DEPS 或先运行 ../final-fantasy-resonance-export/scripts/run.sh export）",
             map_file.display()
         );
         return;

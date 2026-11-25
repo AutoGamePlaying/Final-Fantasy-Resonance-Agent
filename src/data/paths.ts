@@ -1,6 +1,6 @@
 /**
  * Paths inside the unpacked R2 export tree (<deps>/ffr/export/). The export directory holds
- * game-derived JSON produced by tools/ffr-export and is never committed to git.
+ * game-derived JSON produced by final-fantasy-resonance-export and is never committed to git.
  */
 
 import { join } from "node:path";
@@ -8,7 +8,7 @@ import { depsDir } from "../shared/index.ts";
 
 const GAME_MOUNT_PREFIX = "/Game/";
 
-/** <deps>/ffr/export: root directory produced by tools/ffr-export export. */
+/** <deps>/ffr/export: root directory produced by final-fantasy-resonance-export export. */
 export function exportDir(env: NodeJS.ProcessEnv = process.env): string {
   return join(depsDir(env), "ffr", "export");
 }
@@ -18,7 +18,7 @@ export function datatableDir(root: string = exportDir()): string {
   return join(root, "FFRS", "Content", "Datatable");
 }
 
-/** <exportRoot>/Localization: per-language JSON files produced by tools/ffr-export locres. */
+/** <exportRoot>/Localization: per-language JSON files produced by final-fantasy-resonance-export locres. */
 export function localizationDir(root: string = exportDir()): string {
   return join(root, "Localization");
 }

@@ -428,7 +428,7 @@ impl TextResolver {
                 Ok(catalog) => CachedLocalization::Loaded(Arc::new(catalog)),
                 Err(DataError::Io { source, .. }) if source.kind() == ErrorKind::NotFound => {
                     CachedLocalization::NotFound(format!(
-                        "缺少语言 {language} 的本地化表（可运行 tools/ffr-export/run.sh locres --lang {language} 导出到 Localization/{language}.json）"
+                        "缺少语言 {language} 的本地化表（可运行 ../final-fantasy-resonance-export/scripts/run.sh locres --lang {language} 导出到 Localization/{language}.json）"
                     ))
                 }
                 Err(error) => CachedLocalization::Error(format!(

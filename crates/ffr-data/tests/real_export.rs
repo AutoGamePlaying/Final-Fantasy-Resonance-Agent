@@ -29,7 +29,7 @@ fn real_export_scenario_and_composite_map_structure() {
     let chapter_file = datatable_dir(&export_root).join("Scenario/DT_ChapterData.json");
     if !chapter_file.is_file() {
         eprintln!(
-            "跳过真实导出测试：未找到 {}（设置 FFR_DEPS 或先运行 tools/ffr-export export）",
+            "跳过真实导出测试：未找到 {}（设置 FFR_DEPS 或先运行 ../final-fantasy-resonance-export/scripts/run.sh export）",
             chapter_file.display()
         );
         return;
@@ -114,7 +114,7 @@ fn real_export_multilingual_locres_resolution() {
         && localization_file(&export_root, "ja").is_file();
     if !has_all {
         eprintln!(
-            "跳过真实导出多语言测试：未找到完整的 Localization/{{zh-Hans,en,ja}}.json（可运行 tools/ffr-export/run.sh locres）"
+            "跳过真实导出多语言测试：未找到完整的 Localization/{{zh-Hans,en,ja}}.json（可运行 ../final-fantasy-resonance-export/scripts/run.sh locres）"
         );
         return;
     }

@@ -35,7 +35,9 @@ async function fileExists(path: string): Promise<boolean> {
 
 await test("真实导出数据：章节、主线剧情与复合地图表结构核对", async (t) => {
   if (!(await fileExists(CHAPTER_FILE))) {
-    t.skip("未找到导出的游戏数据表（设置 FFR_DEPS 或先运行 tools/ffr-export export）");
+    t.skip(
+      "未找到导出的游戏数据表（设置 FFR_DEPS 或先运行 ../final-fantasy-resonance-export/scripts/run.sh export）",
+    );
     return;
   }
 
@@ -104,7 +106,7 @@ await test("真实导出多语言 locres：默认 zh-Hans、en、ja 可按语言
     (await fileExists(localizationFile("ja", REAL_EXPORT)));
   if (!hasAll) {
     t.skip(
-      "未找到导出的 Localization/{zh-Hans,en,ja}.json（可运行 tools/ffr-export/run.sh locres）",
+      "未找到导出的 Localization/{zh-Hans,en,ja}.json（可运行 ../final-fantasy-resonance-export/scripts/run.sh locres）",
     );
     return;
   }
