@@ -124,6 +124,7 @@ pub(crate) fn render_battle(
             let scheduled_skill_name = scheduled_skill_id.and_then(|id| lookup.skill_name(id));
 
             let affinity = build_enemy_affinity(
+                unit_id,
                 obj_array(u, "weaknesses"),
                 profile.as_ref(),
                 reveal_hidden_weaknesses,
@@ -495,6 +496,7 @@ struct ResistanceEntry {
 }
 
 fn build_enemy_affinity(
+    unit_id: Option<i64>,
     runtime_list: Option<&[Value]>,
     profile: Option<&ffr_data::battle::EnemyProfile>,
     reveal_hidden: bool,
@@ -691,8 +693,12 @@ fn build_enemy_affinity(
             } else {
                 revealed_zh.join("、")
             };
+            let read_enemy_hint = match unit_id {
+                Some(id) => format!("完整弱点可用 read_enemy(unit_id={id}) 查"),
+                None => "完整弱点可用 read_enemy 按编号查".to_owned(),
+            };
             summary_parts.push(format!(
-                "已揭示弱点：{rev_text}（数据表另有 {unrevealed_count} 个未揭示弱点）"
+                "已揭示弱点：{rev_text}（数据表另有 {unrevealed_count} 个未揭示弱点，{read_enemy_hint}）"
             ));
         }
 

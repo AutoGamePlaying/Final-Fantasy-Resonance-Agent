@@ -348,11 +348,15 @@ async fn weakness_fairness_switch_hides_unrevealed_weaknesses_by_default_and_rev
     let enemies_serialized =
         serde_json::to_string(&fair_json["state"]["battle"]["enemies"]).expect("serialize enemies");
     assert!(
-        fair_enemy_section.contains("已揭示弱点：火（数据表另有 1 个未揭示弱点）"),
+        fair_enemy_section.contains(
+            "已揭示弱点：火（数据表另有 1 个未揭示弱点，完整弱点可用 read_enemy(unit_id=9101) 查）"
+        ),
         "{fair_enemy_section}"
     );
     assert!(
-        fair_enemy_section.contains("已揭示弱点：冰（数据表另有 1 个未揭示弱点）"),
+        fair_enemy_section.contains(
+            "已揭示弱点：冰（数据表另有 1 个未揭示弱点，完整弱点可用 read_enemy(unit_id=9201) 查）"
+        ),
         "{fair_enemy_section}"
     );
     for forbidden in [
