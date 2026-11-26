@@ -1,9 +1,0 @@
-[
-  {
-    "Type": "DataTable",
-    "Name": "DT_Mock_Ignored",
-    "Class": "UScriptClass'DataTable'",
-    "Package": "/Game/Datatable/DT_Mock_Ignored",
-    "Rows": {}
-  }
-]
