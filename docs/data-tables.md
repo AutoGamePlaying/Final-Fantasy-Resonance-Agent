@@ -272,7 +272,7 @@ flowchart LR
 
 ## 六、世界
 
-本节补充世界与探索相关表的字段结构、反查规则与静态覆盖边界（对应 `crates/ffr-data/src/world.rs`），仅记录表路径、类型、字段与关联，不包含游戏正文内容。
+本节补充世界与探索相关表的字段结构、反查规则与静态覆盖边界（对应导出仓库 `final-fantasy-resonance-export/crates/ffr-data/src/world.rs`），仅记录表路径、类型、字段与关联，不包含游戏正文内容。
 
 ### 1. 地图、区域与关卡名反查
 
@@ -413,7 +413,7 @@ flowchart LR
 
 关卡 JSON（`<关卡名>.json`）与地图连通图谱（`_graph.json`）由独立仓库 [final-fantasy-resonance-export](https://github.com/AutoGamePlaying/final-fantasy-resonance-export) 的 `export-maps` 子命令从游戏包 `.umap` 提取，默认放在 `$FFR_DEPS/ffr/export-full/maps/`，不进版本库。
 
-本地数据库的关卡区域（`crates/ffr-db/src/build/levels.rs`，对应 `docs/database.md`）按以下字段入库：
+本地数据库的关卡区域（导出仓库 `final-fantasy-resonance-export/crates/ffr-db/src/build/levels.rs`，对应 `docs/database.md`）按以下字段入库：
 
 - 单关卡 `<关卡名>.json`：读取 `level`（`name`、`outputFile`、`path`、`packagePath`、`sublevelType`、`persistentLevel`、`mapId`/`mapIds`）写入 `level`、`level_map`；读取 `actors[]`（`name`、`label`、`class`、`isGameClass`、`location`/`rotation`/`scale`、`properties`/`assetRefs`/`subobjects` 及组件包围盒）写入 `actor`、`actor_rtree`；读取 `summary` 的 10 类对象清单（`mapUnits`、`treasureBoxes`、`eventTriggers`、`transitions`、`transitionPoints`、`savePoints`、`shops`、`inns`、`gimmicks`、`encounterZones`）写入 `level_object`、`transition_point`、`map_shop`。
 - 地图图谱 `_graph.json`：读取各图 `exits[]`（`sourceLevel`、`actorName`、`uniqueId`、`kind`、`targetMapId`/`targetPointId`、`isSameMap`/`isAutoTransition`/`isEventOnly`、`condition`、`location`）写入 `map_edge`。

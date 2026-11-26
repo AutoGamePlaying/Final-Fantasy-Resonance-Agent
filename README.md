@@ -92,26 +92,25 @@ FFR_DEPS="$PWD/.deps" ../final-fantasy-resonance-export/scripts/run.sh export --
 
 ## Rust 工作区与 AGP 游戏模块
 
-仓库根目录是 Cargo workspace（`Cargo.toml`、`Cargo.lock` 与 `target/` 均在根目录），包含三个成员 crate：
+仓库根目录是 Cargo workspace（`Cargo.toml`、`Cargo.lock` 与 `target/` 均在根目录），成员只有 `crates/ffr-module`：
 
-- `crates/ffr-data`：离线游戏数据层，按需加载并缓存 `.deps/ffr/export/`（或 `$FFR_DEPS/ffr/export`）中的 `DataTable` / `CompositeDataTable`、`StringTable` 与 `Localization/<lang>.json`，提供语言感知的 `FText` 解析（默认 `zh-Hans`，缺失时不把日文冒充中文）以及章节、主线剧情、战斗与世界表的类型化查询。
-- `crates/ffr-db`：本地 SQLite 游戏数据库与只读 API（`GameDb`）以及命令行工具 `ffr-db`（`build`、`stats`、`sql`、`explain`、`bench`），将导出数据打包进单个 SQLite 文件，设计见 [docs/database.md](docs/database.md)。
 - `crates/ffr-module`：独立的 AGP 外部游戏模块（工具集版本 `ffr-3`），通过 JSON-RPC 由 AGP 启动，经文件桥读取 `FfrBridge` 实时状态与只读命令（`game_status`、`bridge_ping`、`read_game_state`、`read_save_slots`、`read_inventory`、`read_event_flags`、`read_input_state`、`query_nav_path`），并经 `ffr-db` 数据库提供全量静态游戏数据查询工具（`read_chapter`、`read_map`、`read_enemy`、`read_battle_group`、`read_skill`、`read_item`、`read_quest`、`read_shop`、`search_data`、`find_route`、`where_to_get`、`read_npc`、`read_talk`、`whats_near`、`query_game_db`）与分页只读资源（`ffr://chapters`、`ffr://maps`、`ffr://enemies`、`ffr://skills`、`ffr://db/schema`）。
 
-开发和检查需要 Rust 工具链；在仓库根目录构建本地数据库、运行 workspace 检查与 Windows 交叉编译：
+`ffr-data` 与 `ffr-db` 位于独立导出仓库 [final-fantasy-resonance-export](https://github.com/AutoGamePlaying/final-fantasy-resonance-export)（设计见 [docs/database.md](docs/database.md) 与 [final-fantasy-resonance-export/docs/database.md](https://github.com/AutoGamePlaying/final-fantasy-resonance-export/blob/main/docs/database.md)）。编译与检查本仓库需要 Rust 工具链，并把导出仓库和 AGP 仓库放在同级目录（`../final-fantasy-resonance-export`、`../agp`）。
+
+构建本地数据库在导出仓库执行（支持 `ffr-db build` 或 `ffr-export build-db`）；本仓库只负责检查和编译 `ffr-module`：
 
 ```bash
-# 构建游戏数据库（默认读取 $FFR_DEPS/ffr/{export,export-full,inventory,export-full/maps}，
+# 在同级导出仓库构建游戏数据库（默认读取 $FFR_DEPS/ffr/{export,export-full,inventory,export-full/maps}，
 # 默认输出到 $FFR_DEPS/ffr/db/ffr.sqlite；部署给游戏机时不要带 --snapshots）
-FFR_DEPS=.deps cargo run --release -p ffr-db -- build
+FFR_DEPS="$PWD/.deps" cargo run --manifest-path ../final-fantasy-resonance-export/Cargo.toml --release -p ffr-db -- build
 
-# 性能验收与检查
-FFR_DEPS=.deps cargo run --release -p ffr-db -- bench
+# 本仓库 Rust 检查与 Windows 交叉编译（仅编 ffr-module）
 ./scripts/check-rust.sh
-cargo xwin build --release --target x86_64-pc-windows-msvc -p ffr-module -p ffr-db
+cargo xwin build --release --target x86_64-pc-windows-msvc -p ffr-module
 ```
 
-交叉编译产物在 `target/x86_64-pc-windows-msvc/release/`（`ffr-module.exe` 与 `ffr-db.exe`）。部署到游戏机时，只需复制 `ffr-module.exe` 和开发机构建好的单个数据库文件 `ffr.sqlite`（构建时不要传 `--snapshots`，不包含开发机实机快照），再在 AGP 运行配置的 `[module]` 段填写：
+交叉编译产物在 `target/x86_64-pc-windows-msvc/release/ffr-module.exe`。部署到游戏机时，只需复制 `ffr-module.exe` 和在导出仓库构建好的单个数据库文件 `ffr.sqlite`（构建时不要传 `--snapshots`，不包含开发机实机快照），再在 AGP 运行配置的 `[module]` 段填写：
 
 ```toml
 [module]

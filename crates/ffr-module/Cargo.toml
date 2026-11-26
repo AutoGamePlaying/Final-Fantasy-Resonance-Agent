@@ -11,8 +11,8 @@ agp-platform = { path = "../../../agp/crates/agp-platform" }
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true
-ffr-data = { path = "../ffr-data" }
-ffr-db = { path = "../ffr-db" }
+ffr-data = { path = "../../../final-fantasy-resonance-export/crates/ffr-data" }
+ffr-db = { path = "../../../final-fantasy-resonance-export/crates/ffr-db" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 
