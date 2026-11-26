@@ -10,10 +10,10 @@ use std::time::{Duration, Instant};
 
 use common::{
     TestDir, call_data_err, call_data_ok, copy_dir_recursive, module_with_data, module_with_db,
-    read_all_resource_text, repo_root, write_json_atomic,
+    open_real_db_or_skip, read_all_resource_text, repo_root, write_json_atomic,
 };
 use ffr_data::FFR_DEPS_ENV;
-use ffr_db::{BuildInputs, BuildOptions, GameDb, Stage, default_db_path_from_deps};
+use ffr_db::{BuildInputs, BuildOptions, Stage, default_db_path_from_deps};
 use serde_json::{Value, json};
 
 /// Build a synthetic multi-stage `ffr-db` SQLite database based on `test/fixtures/db/links`,
@@ -863,6 +863,7 @@ fn build_ffr3_fixture_db(work_dir: &Path) -> (PathBuf, PathBuf) {
             Stage::Links,
         ]),
         game_build_id: Some("mock-ffr3".to_owned()),
+        threads: None,
     };
     ffr_db::build(&options).expect("build ffr3 fixture db");
 
@@ -1529,7 +1530,8 @@ async fn query_game_db_enforces_row_cap_size_truncation_timeout_and_readonly_saf
     // 7. `ffr://db/schema` resource describes all tables with Chinese descriptions & columns.
     let schema_raw = read_all_resource_text(&module, "ffr://db/schema").await;
     let schema: Value = serde_json::from_str(&schema_raw).expect("valid schema JSON");
-    assert!(schema["table_count"].as_u64().is_some_and(|n| n >= 70));
+    assert_eq!(schema["schema_version"], ffr_db::SCHEMA_VERSION);
+    assert!(schema["table_count"].as_u64().is_some_and(|n| n >= 89));
     let tables = schema["tables"].as_array().expect("tables array");
     for required in [
         "map",
@@ -1538,6 +1540,11 @@ async fn query_game_db_enforces_row_cap_size_truncation_timeout_and_readonly_saf
         "level_object",
         "map_edge",
         "talk_event",
+        "text_untranslated",
+        "item_untranslated",
+        "skill_untranslated",
+        "talk_line_untranslated",
+        "map_unit_untranslated",
     ] {
         let entry = tables
             .iter()
@@ -1552,6 +1559,268 @@ async fn query_game_db_enforces_row_cap_size_truncation_timeout_and_readonly_saf
             "missing columns for {required}"
         );
     }
+}
+
+#[tokio::test]
+async fn untranslated_entities_in_ffr3_tools_render_honest_text_and_json() {
+    let temp = TestDir::new();
+    let bridge = temp.path().join("bridge");
+    let links_src = repo_root().join("test/fixtures/db/links");
+    let fixture_root = temp.path().join("fixture");
+    copy_dir_recursive(&links_src, &fixture_root);
+
+    let export_dir = fixture_root.join("export");
+    let export_full_dir = fixture_root.join("export-full");
+    let maps_dir = fixture_root.join("maps");
+
+    let ja_item_name = "テスト未訳アイテム";
+    let ja_item_desc = "テスト未訳アイテムの説明";
+    let ja_skill_name = "テスト未訳スキル";
+    let ja_skill_desc = "テスト未訳スキルの説明";
+    let ja_enemy_name = "テスト未訳モンスター";
+    let ja_npc_name = "テスト未訳勇者";
+    let ja_talk_line = "未翻訳テスト台詞。";
+
+    // 1. Mark item 1, skill 100010, enemy 462, playable/map_unit 10 (unit 1001), and talk L3_UNTRANS
+    //    as officially untranslated by storing identical kana Japanese strings in `ja.json` and `zh-Hans.json`.
+    for lang in ["ja", "zh-Hans"] {
+        let loc_path = export_dir.join(format!("Localization/{lang}.json"));
+        let mut loc: Value =
+            serde_json::from_str(&fs::read_to_string(&loc_path).expect("read loc"))
+                .expect("parse loc");
+        let world_ns = loc["ST_MockWorld"].as_object_mut().expect("ST_MockWorld");
+        world_ns.insert("ITEM_1".to_owned(), json!(ja_item_name));
+        world_ns.insert("ITEM_1_DESC".to_owned(), json!(ja_item_desc));
+        world_ns.insert("SKILL_100010".to_owned(), json!(ja_skill_name));
+        world_ns.insert("SKILL_100010_DESC".to_owned(), json!(ja_skill_desc));
+        world_ns.insert("UNIT_462".to_owned(), json!(ja_enemy_name));
+        world_ns.insert("UNIT_1001".to_owned(), json!(ja_npc_name));
+        let story_ns = loc["ST_MockStory"].as_object_mut().expect("ST_MockStory");
+        story_ns.insert("L3_UNTRANS".to_owned(), json!(ja_talk_line));
+        fs::write(
+            &loc_path,
+            serde_json::to_vec_pretty(&loc).expect("encode loc"),
+        )
+        .expect("write loc");
+    }
+
+    // Attach untranslated Description to item 1 and skill 100010, and untranslated Name + drop to enemy 462.
+    {
+        let item_path = export_dir.join("FFRS/Content/Datatable/Item/DT_ConsumablesItemData.json");
+        let mut doc: Value =
+            serde_json::from_str(&fs::read_to_string(&item_path).expect("read item dt"))
+                .expect("parse item dt");
+        let rows = doc[0]["Rows"].as_object_mut().expect("item rows");
+        for row in rows.values_mut() {
+            if row["ID"] == 1 {
+                row["Description"] = json!({
+                    "TableId": "/Game/Datatable/Strings/ST_MockWorld.ST_MockWorld",
+                    "Key": "ITEM_1_DESC",
+                    "SourceString": ja_item_desc,
+                    "LocalizedString": ja_item_desc
+                });
+            }
+        }
+        fs::write(
+            &item_path,
+            serde_json::to_vec_pretty(&doc).expect("encode item dt"),
+        )
+        .expect("write item dt");
+    }
+    {
+        let skill_path = export_dir.join("FFRS/Content/Datatable/Skill/DT_SkillData.json");
+        let mut doc: Value =
+            serde_json::from_str(&fs::read_to_string(&skill_path).expect("read skill dt"))
+                .expect("parse skill dt");
+        doc[0]["Rows"]["MockSlash"]["Description"] = json!({
+            "TableId": "/Game/Datatable/Strings/ST_MockWorld.ST_MockWorld",
+            "Key": "SKILL_100010_DESC",
+            "SourceString": ja_skill_desc,
+            "LocalizedString": ja_skill_desc
+        });
+        fs::write(
+            &skill_path,
+            serde_json::to_vec_pretty(&doc).expect("encode skill dt"),
+        )
+        .expect("write skill dt");
+    }
+    {
+        let unit_path = export_dir.join("FFRS/Content/Datatable/Unit/DT_UnitParameter.json");
+        let mut doc: Value =
+            serde_json::from_str(&fs::read_to_string(&unit_path).expect("read unit dt"))
+                .expect("parse unit dt");
+        let enemy = doc[0]["Rows"]["テスト敵"]
+            .as_object_mut()
+            .expect("enemy 462 row");
+        enemy.insert(
+            "Name".to_owned(),
+            json!({
+                "TableId": "/Game/Datatable/Strings/ST_MockWorld.ST_MockWorld",
+                "Key": "UNIT_462",
+                "SourceString": ja_enemy_name,
+                "LocalizedString": ja_enemy_name
+            }),
+        );
+        enemy.insert("DropNormalItem".to_owned(), json!(1));
+        enemy.insert("DropNormalItemRate".to_owned(), json!(25));
+        fs::write(
+            &unit_path,
+            serde_json::to_vec_pretty(&doc).expect("encode unit dt"),
+        )
+        .expect("write unit dt");
+    }
+
+    let db_path = temp.path().join("ffr3-untranslated.sqlite");
+    let options = BuildOptions {
+        inputs: BuildInputs {
+            export: Some(export_dir),
+            full: Some(export_full_dir),
+            maps: Some(maps_dir),
+            jmaps: vec![fixture_root.join("01-mock.jmap")],
+            ..Default::default()
+        },
+        output: db_path.clone(),
+        stages: Some(vec![
+            Stage::Text,
+            Stage::Datatable,
+            Stage::Battle,
+            Stage::World,
+            Stage::Reflection,
+            Stage::InputUi,
+            Stage::Levels,
+            Stage::Sequences,
+            Stage::Links,
+        ]),
+        game_build_id: None,
+        threads: None,
+    };
+    ffr_db::build(&options).expect("build untranslated ffr3 fixture db");
+
+    let module = module_with_db(&bridge, &db_path);
+
+    // 1. `read_item`
+    let (item_text, item_val) = call_data_ok(&module, "read_item", json!({ "item_id": 1 })).await;
+    assert!(
+        item_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_item_name}）")),
+        "{item_text}"
+    );
+    assert!(
+        item_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_item_desc}）")),
+        "{item_text}"
+    );
+    assert_eq!(item_val["name"], Value::Null);
+    assert_eq!(item_val["name_untranslated"], true);
+    assert_eq!(item_val["name_ja"], ja_item_name);
+    assert_eq!(item_val["description"], Value::Null);
+    assert_eq!(item_val["description_untranslated"], true);
+    assert_eq!(item_val["description_ja"], ja_item_desc);
+
+    // 2. `read_skill`
+    let (skill_text, skill_val) =
+        call_data_ok(&module, "read_skill", json!({ "skill_id": 100010 })).await;
+    assert!(
+        skill_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_skill_name}）")),
+        "{skill_text}"
+    );
+    assert!(
+        skill_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_skill_desc}）")),
+        "{skill_text}"
+    );
+    assert_eq!(skill_val["name"], Value::Null);
+    assert_eq!(skill_val["name_untranslated"], true);
+    assert_eq!(skill_val["name_ja"], ja_skill_name);
+    assert_eq!(skill_val["description"], Value::Null);
+    assert_eq!(skill_val["description_untranslated"], true);
+    assert_eq!(skill_val["description_ja"], ja_skill_desc);
+
+    // 3. `read_enemy` (untranslated enemy name + untranslated dropped item)
+    let (enemy_text, enemy_val) =
+        call_data_ok(&module, "read_enemy", json!({ "unit_id": 462 })).await;
+    assert!(
+        enemy_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_enemy_name}）")),
+        "{enemy_text}"
+    );
+    assert!(
+        enemy_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_item_name}）")),
+        "{enemy_text}"
+    );
+    assert_eq!(enemy_val["name"], Value::Null);
+    assert_eq!(enemy_val["name_untranslated"], true);
+    assert_eq!(enemy_val["name_ja"], ja_enemy_name);
+    assert_eq!(enemy_val["drops"]["normal"]["item_name"], Value::Null);
+    assert_eq!(enemy_val["drops"]["normal"]["item_name_untranslated"], true);
+    assert_eq!(enemy_val["drops"]["normal"]["item_name_ja"], ja_item_name);
+
+    // 4. `where_to_get` (untranslated item + untranslated enemy drop source)
+    let (wtg_text, wtg_val) = call_data_ok(&module, "where_to_get", json!({ "item_id": 1 })).await;
+    assert!(
+        wtg_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_item_name}）")),
+        "{wtg_text}"
+    );
+    assert!(
+        wtg_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_enemy_name}）")),
+        "{wtg_text}"
+    );
+    assert_eq!(wtg_val["item_name"], Value::Null);
+    assert_eq!(wtg_val["item_name_untranslated"], true);
+    assert_eq!(wtg_val["item_name_ja"], ja_item_name);
+    assert_eq!(wtg_val["enemy_drops"][0]["unit_name"], Value::Null);
+    assert_eq!(wtg_val["enemy_drops"][0]["unit_name_untranslated"], true);
+    assert_eq!(wtg_val["enemy_drops"][0]["unit_name_ja"], ja_enemy_name);
+
+    // 5. `read_npc` (by map_unit_id and by Japanese name)
+    let (npc_text, npc_val) = call_data_ok(&module, "read_npc", json!({ "map_unit_id": 10 })).await;
+    assert!(
+        npc_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_npc_name}）")),
+        "{npc_text}"
+    );
+    assert_eq!(npc_val["name_zh"], Value::Null);
+    assert_eq!(npc_val["name_untranslated"], true);
+    assert_eq!(npc_val["name_ja"], ja_npc_name);
+
+    let (npc_by_name_text, npc_by_name_val) =
+        call_data_ok(&module, "read_npc", json!({ "name": ja_npc_name })).await;
+    assert!(
+        npc_by_name_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_npc_name}）")),
+        "{npc_by_name_text}"
+    );
+    assert_eq!(npc_by_name_val["name_zh"], Value::Null);
+    assert_eq!(npc_by_name_val["name_untranslated"], true);
+    assert_eq!(npc_by_name_val["name_ja"], ja_npc_name);
+
+    // 6. `read_talk` (line L3_UNTRANS is officially untranslated)
+    let (talk_text, talk_val) =
+        call_data_ok(&module, "read_talk", json!({ "event_id": "EV_STORY_01" })).await;
+    assert!(
+        talk_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_talk_line}）")),
+        "{talk_text}"
+    );
+    let untrans_line = talk_val["lines"]
+        .as_array()
+        .expect("talk lines")
+        .iter()
+        .find(|l| l["row_key"] == "Line_M")
+        .expect("Line_M present");
+    assert_eq!(untrans_line["text"], Value::Null);
+    assert_eq!(untrans_line["text_untranslated"], true);
+    assert_eq!(untrans_line["text_ja"], ja_talk_line);
+
+    // 7. `search_data` finds untranslated item, skill, and enemy
+    let (search_text, search_val) =
+        call_data_ok(&module, "search_data", json!({ "query": "テスト未訳" })).await;
+    assert!(
+        search_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_item_name}）")),
+        "{search_text}"
+    );
+    assert!(
+        search_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_skill_name}）")),
+        "{search_text}"
+    );
+    assert!(
+        search_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_enemy_name}）")),
+        "{search_text}"
+    );
+    assert_eq!(search_val["total_matches"], 3, "{search_val}");
 }
 
 #[tokio::test]
@@ -1625,20 +1894,17 @@ fn real_db_path() -> PathBuf {
 #[tokio::test]
 async fn real_db_six_ffr3_spot_checks() {
     let db_path = real_db_path();
-    let Ok(db) = GameDb::open(&db_path) else {
-        eprintln!("跳过真实数据库 ffr-3 抽查：未找到 {}", db_path.display());
+    let Some(db) = open_real_db_or_skip(&db_path, "真实数据库 ffr-3 抽查") else {
         return;
     };
     let has_full = db.has_battle_data().unwrap_or(false)
         && db.has_world_data().unwrap_or(false)
         && db.map_exits(3001).is_ok_and(|e| !e.is_empty());
-    if !has_full {
-        eprintln!(
-            "跳过真实数据库 ffr-3 抽查：{} 缺少关卡或核心表",
-            db_path.display()
-        );
-        return;
-    }
+    assert!(
+        has_full,
+        "真实数据库 {} 缺少关卡或核心表；请运行 `ffr-db build` 重建完整数据库",
+        db_path.display()
+    );
     drop(db);
 
     let temp = TestDir::new();

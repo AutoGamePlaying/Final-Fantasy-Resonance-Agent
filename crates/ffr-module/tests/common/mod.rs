@@ -164,8 +164,47 @@ pub fn build_fixture_db_from_export(export_dir: &Path, db_path: &Path) {
             ffr_db::Stage::World,
         ]),
         game_build_id: None,
+        threads: None,
     };
     ffr_db::build(&options).expect("build fixture ffr-db sqlite");
+}
+
+/// Open a real-data `ffr-db` SQLite file for tests.
+///
+/// - Skips (returns `None`) ONLY when `db_path` does not exist on disk.
+/// - Panics with clear Chinese rebuild instructions when `db_path` exists but has an incompatible
+///   schema version or cannot be opened; never silently skips or auto-rebuilds the real DB.
+#[allow(dead_code)]
+pub fn open_real_db_or_skip(db_path: &Path, test_label: &str) -> Option<ffr_db::GameDb> {
+    if !db_path.is_file() {
+        eprintln!("跳过{test_label}：未找到数据库文件 {}", db_path.display());
+        return None;
+    }
+    match ffr_db::GameDb::open(db_path) {
+        Ok(db) => Some(db),
+        Err(ffr_db::DbError::SchemaVersionMismatch {
+            path,
+            expected,
+            actual,
+        }) => panic!(
+            "{test_label}失败：真实数据库 {} 的 schema 版本为 v{actual}，当前程序要求 v{expected}。\
+             测试不会自动跳过，也不会自动重建该文件；请在导出仓库中手动运行：\n\
+             \tcargo run --release -p ffr-db -- build --deps <FFR_DEPS目录> --output {}\n\
+             （或设置 FFR_DEPS 后运行 `ffr-db build`）完成重建后再重新执行测试。",
+            path.display(),
+            path.display()
+        ),
+        Err(ffr_db::DbError::MissingSchemaVersion { path, detail }) => panic!(
+            "{test_label}失败：真实数据库 {} 缺少合法的 schema_version 记录（{detail}）。\
+             测试不会自动跳过，也不会自动重建该文件；请先运行 `ffr-db build` 重新构建后再执行测试。",
+            path.display()
+        ),
+        Err(err) => panic!(
+            "{test_label}失败：无法打开真实数据库 {}：{err}。\
+             测试不会自动跳过；请检查文件完整性或运行 `ffr-db build` 重新构建。",
+            db_path.display()
+        ),
+    }
 }
 
 #[allow(dead_code)]

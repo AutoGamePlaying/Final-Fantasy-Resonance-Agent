@@ -9,11 +9,12 @@ use std::path::PathBuf;
 use agp_core::RunId;
 use agp_game::{CallContext, Content, GameModule, ResourceRange};
 use common::{
-    TestDir, build_fixture_db_from_export, call_data_ok, module_with_data, module_with_db,
-    read_all_resource_text, repo_root,
+    TestDir, build_fixture_db_from_export, build_merged_fixture_export, call_data_err,
+    call_data_ok, module_with_data, module_with_db, open_real_db_or_skip, read_all_resource_text,
+    repo_root,
 };
 use ffr_data::{FFR_DEPS_ENV, datatable_dir, export_dir_from_deps, localization_file};
-use ffr_db::{GameDb, default_db_path_from_deps};
+use ffr_db::default_db_path_from_deps;
 use serde_json::json;
 
 fn real_export_dir() -> PathBuf {
@@ -32,15 +33,6 @@ fn real_db_candidate() -> PathBuf {
         return default_db_path_from_deps(PathBuf::from(deps));
     }
     default_db_path_from_deps(repo_root().join(".deps"))
-}
-
-fn has_populated_core_tables(db_path: &std::path::Path) -> bool {
-    let Ok(db) = GameDb::open(db_path) else {
-        return false;
-    };
-    db.has_battle_data().unwrap_or(false)
-        && db.has_world_data().unwrap_or(false)
-        && db.has_scenario_data().unwrap_or(false)
 }
 
 #[tokio::test]
@@ -207,18 +199,21 @@ async fn real_data_db_and_json_outputs_align_verbatim() {
     let temp = TestDir::new();
     let bridge_dir = temp.path().join("bridge");
     let candidate_db = real_db_candidate();
-    let db_path = if has_populated_core_tables(&candidate_db) {
-        candidate_db
-    } else {
-        let built = temp.path().join("real-core.sqlite");
-        build_fixture_db_from_export(&export_root, &built);
-        built
+    // If `.deps/ffr/db/ffr.sqlite` exists, validate it strictly (never skip or rebuild on old
+    // schema version); only skip if the DB file does not exist at all.
+    let Some(db) = open_real_db_or_skip(&candidate_db, "真实数据 DB 对齐测试") else {
+        return;
     };
-
-    let db_has_levels = GameDb::open(&db_path)
-        .ok()
-        .and_then(|db| db.map_exits(3001).ok())
-        .is_some_and(|exits| !exits.is_empty());
+    assert!(
+        db.has_battle_data().unwrap_or(false)
+            && db.has_world_data().unwrap_or(false)
+            && db.has_scenario_data().unwrap_or(false),
+        "真实数据库 {} 缺少核心表（battle/world/scenario）；请运行 `ffr-db build` 重建完整数据库",
+        candidate_db.display()
+    );
+    let db_has_levels = db.map_exits(3001).is_ok_and(|exits| !exits.is_empty());
+    drop(db);
+    let db_path = candidate_db;
 
     let db_mod = module_with_db(&bridge_dir, &db_path);
     let json_mod = module_with_data(&bridge_dir, &export_root);
@@ -227,8 +222,11 @@ async fn real_data_db_and_json_outputs_align_verbatim() {
         ("read_enemy", json!({ "name": "钢蝠" })),
         ("read_enemy", json!({ "unit_id": 2 })),
         ("read_skill", json!({ "name": "火炎" })),
+        ("read_skill", json!({ "skill_id": 400220 })),
+        ("read_skill", json!({ "skill_id": 100220 })),
         ("read_item", json!({ "name": "恢复药" })),
         ("read_item", json!({ "name": "碎星锤" })),
+        ("read_item", json!({ "item_id": 10699 })),
         ("read_chapter", json!({})),
         ("read_chapter", json!({ "chapter": 1 })),
         ("read_shop", json!({ "shop_id": 2 })),
@@ -363,4 +361,48 @@ async fn real_data_db_and_json_outputs_align_verbatim() {
         let json_body = read_all_resource_text(&json_mod, uri).await;
         assert_eq!(db_body, json_body, "真实数据资源 `{uri}` 不一致");
     }
+}
+
+#[tokio::test]
+async fn schema_v1_database_fails_with_clear_chinese_rebuild_instructions() {
+    let temp = TestDir::new();
+    let export_dir = temp.path().join("export");
+    let db_path = temp.path().join("old-v1.sqlite");
+    build_merged_fixture_export(&export_dir);
+    build_fixture_db_from_export(&export_dir, &db_path);
+
+    // Downgrade `meta.schema_version` to `'1'` to simulate an un-rebuilt v1 database.
+    {
+        let conn = rusqlite::Connection::open(&db_path).expect("open temp db rw");
+        conn.execute(
+            "UPDATE meta SET value = '1' WHERE key = 'schema_version'",
+            [],
+        )
+        .expect("set schema_version = 1");
+    }
+
+    // 1. Real-data test helper must panic with clear Chinese rebuild guidance (never auto-skip).
+    let panic_res = std::panic::catch_unwind(|| open_real_db_or_skip(&db_path, "真实数据测试"));
+    let panic_payload = panic_res.expect_err("schema v1 database must panic instead of skipping");
+    let msg = panic_payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+        .expect("panic message is string");
+    assert!(msg.contains("schema 版本为 v1"), "{msg}");
+    assert!(
+        msg.contains(&format!("要求 v{}", ffr_db::SCHEMA_VERSION)),
+        "{msg}"
+    );
+    assert!(msg.contains("ffr-db build"), "{msg}");
+    assert!(msg.contains("不会自动跳过"), "{msg}");
+    assert!(msg.contains("不会自动重建"), "{msg}");
+
+    // 2. Module data tools also return a clear Chinese version-mismatch error.
+    let bridge_dir = temp.path().join("bridge");
+    let db_mod = module_with_db(&bridge_dir, &db_path);
+    let err = call_data_err(&db_mod, "read_item", json!({ "item_id": 1 })).await;
+    assert!(err.contains("版本不兼容"), "{err}");
+    assert!(err.contains("v1"), "{err}");
+    assert!(err.contains("ffr-db build"), "{err}");
 }
