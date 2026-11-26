@@ -1,5 +1,6 @@
 //! Read-only paginated JSON resources exposed via `resources/list` and `resources/read`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use agp_game::{Content, GameError, ResourceDescriptor, ResourcePage, ResourceRange, Result};
@@ -9,10 +10,10 @@ use serde_json::{Value, json};
 
 use crate::data_cache::{DbDataCache, GameDataCache, GameDataSource};
 use crate::data_tools::{
-    available_location_code, collapse_ws, cost_type_code, damage_type_code, element_zh,
-    elements_zh_vec, format_skill_target, resolve_zh_clean,
+    available_location_code, cost_type_code, damage_type_code, element_zh, elements_zh_vec,
+    format_skill_target,
 };
-use crate::data_tools_db::resolve_db_zh_clean;
+use crate::text_format::{ZhText, resolve_db_zh_text_clean, resolve_zh_text_clean, with_zh_fields};
 
 pub const URI_CHAPTERS: &str = "ffr://chapters";
 pub const URI_MAPS: &str = "ffr://maps";
@@ -202,38 +203,37 @@ fn build_chapters_json(cache: &GameDataCache) -> std::result::Result<String, Str
     let scenario = cache.scenario()?;
     let mut chapters = Vec::with_capacity(scenario.chapters.len());
     for ch in &scenario.chapters {
-        let name = scenario
-            .chapter_name(ch.chapter_no)
-            .text
-            .and_then(|t| collapse_ws(&t));
+        let name = resolve_zh_text_clean(&scenario.text_resolver, &ch.name);
         let main_scenario: Vec<Value> = scenario
             .chapter_main_scenario(ch.chapter_no)
             .into_iter()
             .map(|entry| {
-                let texts = scenario.resolve_main_scenario_texts(entry);
-                let text = texts.text.text.and_then(|t| collapse_ws(&t));
-                let summary = texts.summary_text.text.and_then(|t| collapse_ws(&t));
+                let text = resolve_zh_text_clean(&scenario.text_resolver, &entry.text);
+                let summary = resolve_zh_text_clean(&scenario.text_resolver, &entry.summary_text);
                 let destination_map_ids: Vec<i64> = entry
                     .destinations
                     .iter()
                     .map(|dest| dest.destination_id)
                     .collect();
-                json!({
-                    "row_key": entry.row_key,
-                    "min_progress": entry.min_progress,
-                    "text": text,
-                    "summary": summary,
-                    "destination_map_ids": destination_map_ids,
-                })
+                with_zh_fields(
+                    json!({
+                        "row_key": entry.row_key,
+                        "min_progress": entry.min_progress,
+                        "destination_map_ids": destination_map_ids,
+                    }),
+                    &[("text", &text), ("summary", &summary)],
+                )
             })
             .collect();
-        chapters.push(json!({
-            "chapter_no": ch.chapter_no,
-            "main_quest_id": main_quest_id_for_chapter(ch.chapter_no),
-            "row_key": ch.row_key,
-            "name": name,
-            "main_scenario": main_scenario,
-        }));
+        chapters.push(with_zh_fields(
+            json!({
+                "chapter_no": ch.chapter_no,
+                "main_quest_id": main_quest_id_for_chapter(ch.chapter_no),
+                "row_key": ch.row_key,
+                "main_scenario": main_scenario,
+            }),
+            &[("name", &name)],
+        ));
     }
     serde_json::to_string(&json!({ "chapters": chapters }))
         .map_err(|error| format!("序列化章节资源失败：{error}"))
@@ -245,23 +245,25 @@ fn build_maps_json(cache: &GameDataCache) -> std::result::Result<String, String>
         .maps()
         .iter()
         .map(|map| {
-            let name = resolve_zh_clean(world.text_resolver(), &map.name);
+            let name = resolve_zh_text_clean(world.text_resolver(), &map.name);
             let facilities: Vec<&str> = map
                 .facilities
                 .iter()
                 .map(|fac| fac.interact_type.as_str())
                 .collect();
-            json!({
-                "map_id": map.id,
-                "name": name,
-                "level_name": map.level_name,
-                "map_type": map.map_type,
-                "island": map.island,
-                "danger_level": map.danger_level,
-                "teleportable": world.is_teleport_destination(map.id),
-                "treasure_count": world.treasure_boxes_in_map(map.id).len(),
-                "facilities": facilities,
-            })
+            with_zh_fields(
+                json!({
+                    "map_id": map.id,
+                    "level_name": map.level_name,
+                    "map_type": map.map_type,
+                    "island": map.island,
+                    "danger_level": map.danger_level,
+                    "teleportable": world.is_teleport_destination(map.id),
+                    "treasure_count": world.treasure_boxes_in_map(map.id).len(),
+                    "facilities": facilities,
+                }),
+                &[("name", &name)],
+            )
         })
         .collect();
     serde_json::to_string(&json!({ "maps": maps }))
@@ -294,23 +296,25 @@ fn parse_enemies_chapter_query(query: &str) -> Result<i64> {
 
 fn format_enemy_catalog_entry_parts(
     profile: &EnemyProfile,
-    name: Option<String>,
+    name: &ZhText,
     chapters: Option<&[i64]>,
 ) -> Value {
-    json!({
-        "unit_id": profile.unit_id,
-        "name": name,
-        "level": profile.level,
-        "is_boss": profile.is_boss,
-        "max_hp": profile.max_hp,
-        "max_break_point": profile.max_break_point,
-        "weaknesses": elements_zh_vec(&profile.weaknesses),
-        "halved": elements_zh_vec(&profile.halved),
-        "invalid": elements_zh_vec(&profile.invalid),
-        "absorb": elements_zh_vec(&profile.absorb),
-        "high_risk_skill_ids": profile.high_risk_skill_ids,
-        "chapters": chapters,
-    })
+    with_zh_fields(
+        json!({
+            "unit_id": profile.unit_id,
+            "level": profile.level,
+            "is_boss": profile.is_boss,
+            "max_hp": profile.max_hp,
+            "max_break_point": profile.max_break_point,
+            "weaknesses": elements_zh_vec(&profile.weaknesses),
+            "halved": elements_zh_vec(&profile.halved),
+            "invalid": elements_zh_vec(&profile.invalid),
+            "absorb": elements_zh_vec(&profile.absorb),
+            "high_risk_skill_ids": profile.high_risk_skill_ids,
+            "chapters": chapters,
+        }),
+        &[("name", name)],
+    )
 }
 
 fn format_enemy_catalog_entry(
@@ -318,11 +322,8 @@ fn format_enemy_catalog_entry(
     profile: &EnemyProfile,
     chapters: Option<&[i64]>,
 ) -> Value {
-    let name = battle
-        .unit_name_in(profile.unit_id, MODEL_LANGUAGE)
-        .text
-        .and_then(|t| collapse_ws(&t));
-    format_enemy_catalog_entry_parts(profile, name, chapters)
+    let name = resolve_zh_text_clean(&battle.text_resolver, &profile.name);
+    format_enemy_catalog_entry_parts(profile, &name, chapters)
 }
 
 fn build_enemies_json(cache: &GameDataCache) -> std::result::Result<String, String> {
@@ -374,26 +375,25 @@ fn build_skills_json(cache: &GameDataCache) -> std::result::Result<String, Strin
         .skills
         .iter()
         .map(|skill| {
-            let name = battle
-                .skill_name_in(skill.id, MODEL_LANGUAGE)
-                .text
-                .and_then(|t| collapse_ws(&t));
-            json!({
-                "skill_id": skill.id,
-                "name": name,
-                "element": element_zh(skill.element),
-                "damage_type": damage_type_code(skill.damage_type),
-                "power": skill.power,
-                "break_damage": skill.break_damage,
-                "cost": skill.cost,
-                "cost_type": cost_type_code(skill.cost_type),
-                "target": format_skill_target(
-                    skill.default_target_relation,
-                    skill.target_type,
-                    skill.default_target_state,
-                ),
-                "available_location": available_location_code(skill.available_location),
-            })
+            let name = resolve_zh_text_clean(&battle.text_resolver, &skill.name);
+            with_zh_fields(
+                json!({
+                    "skill_id": skill.id,
+                    "element": element_zh(skill.element),
+                    "damage_type": damage_type_code(skill.damage_type),
+                    "power": skill.power,
+                    "break_damage": skill.break_damage,
+                    "cost": skill.cost,
+                    "cost_type": cost_type_code(skill.cost_type),
+                    "target": format_skill_target(
+                        skill.default_target_relation,
+                        skill.target_type,
+                        skill.default_target_state,
+                    ),
+                    "available_location": available_location_code(skill.available_location),
+                }),
+                &[("name", &name)],
+            )
         })
         .collect();
     serde_json::to_string(&json!({ "skills": skills }))
@@ -414,36 +414,39 @@ fn build_chapters_json_db(cache: &DbDataCache) -> std::result::Result<String, St
         .map_err(|err| format!("查询章节列表失败：{err}"))?;
     let mut chapters = Vec::with_capacity(chapter_rows.len());
     for ch in &chapter_rows {
-        let name = resolve_db_zh_clean(&db, &ch.name);
+        let name = resolve_db_zh_text_clean(&db, &ch.name);
         let entries = db
             .main_scenario_by_chapter(ch.chapter_no)
             .map_err(|err| format!("查询第 {} 章主线剧情失败：{err}", ch.chapter_no))?;
         let main_scenario: Vec<Value> = entries
             .iter()
             .map(|entry| {
-                let text = resolve_db_zh_clean(&db, &entry.text);
-                let summary = resolve_db_zh_clean(&db, &entry.summary_text);
+                let text = resolve_db_zh_text_clean(&db, &entry.text);
+                let summary = resolve_db_zh_text_clean(&db, &entry.summary_text);
                 let destination_map_ids: Vec<i64> = entry
                     .destinations
                     .iter()
                     .map(|dest| dest.destination_id)
                     .collect();
-                json!({
-                    "row_key": entry.row_key,
-                    "min_progress": entry.min_progress,
-                    "text": text,
-                    "summary": summary,
-                    "destination_map_ids": destination_map_ids,
-                })
+                with_zh_fields(
+                    json!({
+                        "row_key": entry.row_key,
+                        "min_progress": entry.min_progress,
+                        "destination_map_ids": destination_map_ids,
+                    }),
+                    &[("text", &text), ("summary", &summary)],
+                )
             })
             .collect();
-        chapters.push(json!({
-            "chapter_no": ch.chapter_no,
-            "main_quest_id": main_quest_id_for_chapter(ch.chapter_no),
-            "row_key": ch.row_key,
-            "name": name,
-            "main_scenario": main_scenario,
-        }));
+        chapters.push(with_zh_fields(
+            json!({
+                "chapter_no": ch.chapter_no,
+                "main_quest_id": main_quest_id_for_chapter(ch.chapter_no),
+                "row_key": ch.row_key,
+                "main_scenario": main_scenario,
+            }),
+            &[("name", &name)],
+        ));
     }
     serde_json::to_string(&json!({ "chapters": chapters }))
         .map_err(|error| format!("序列化章节资源失败：{error}"))
@@ -459,27 +462,39 @@ fn build_maps_json_db(cache: &DbDataCache) -> std::result::Result<String, String
     let catalog = db
         .maps_catalog()
         .map_err(|err| format!("查询地图一览失败：{err}"))?;
+    let untranslated_names: HashMap<i64, String> = db
+        .untranslated_maps(MODEL_LANGUAGE)
+        .map_err(|err| format!("查询未翻译地图名称失败：{err}"))?
+        .into_iter()
+        .filter(|entry| entry.field == "name")
+        .map(|entry| (entry.key, entry.value))
+        .collect();
     let maps: Vec<Value> = catalog
         .iter()
         .map(|entry| {
             let map = &entry.map;
-            let name = entry.name_zh.as_deref().and_then(collapse_ws);
+            let name = ZhText::from_parts_clean(
+                entry.name_zh.as_deref(),
+                untranslated_names.get(&map.id).map(String::as_str),
+            );
             let facilities: Vec<&str> = map
                 .facilities
                 .iter()
                 .map(|fac| fac.interact_type.as_str())
                 .collect();
-            json!({
-                "map_id": map.id,
-                "name": name,
-                "level_name": map.level_name,
-                "map_type": map.map_type,
-                "island": map.island,
-                "danger_level": map.danger_level,
-                "teleportable": entry.teleportable,
-                "treasure_count": entry.treasure_count,
-                "facilities": facilities,
-            })
+            with_zh_fields(
+                json!({
+                    "map_id": map.id,
+                    "level_name": map.level_name,
+                    "map_type": map.map_type,
+                    "island": map.island,
+                    "danger_level": map.danger_level,
+                    "teleportable": entry.teleportable,
+                    "treasure_count": entry.treasure_count,
+                    "facilities": facilities,
+                }),
+                &[("name", &name)],
+            )
         })
         .collect();
     serde_json::to_string(&json!({ "maps": maps }))
@@ -494,6 +509,13 @@ fn build_enemies_json_db(cache: &DbDataCache) -> std::result::Result<String, Str
     let rows = db
         .all_enemies_catalog()
         .map_err(|err| format!("查询敌人一览失败：{err}"))?;
+    let untranslated_names: HashMap<i64, String> = db
+        .untranslated_units(MODEL_LANGUAGE)
+        .map_err(|err| format!("查询未翻译单位名称失败：{err}"))?
+        .into_iter()
+        .filter(|entry| entry.field == "name")
+        .map(|entry| (entry.key, entry.value))
+        .collect();
     let chapters_map = if avail.enemy_chapters {
         Some(
             db.all_enemy_chapters()
@@ -506,11 +528,14 @@ fn build_enemies_json_db(cache: &DbDataCache) -> std::result::Result<String, Str
     let mut enemies = Vec::with_capacity(rows.len());
     for row in rows {
         let profile = row.unit.to_enemy_profile(row.ai.as_ref());
-        let name = row.name_zh.as_deref().and_then(collapse_ws);
+        let name = ZhText::from_parts_clean(
+            row.name_zh.as_deref(),
+            untranslated_names.get(&profile.unit_id).map(String::as_str),
+        );
         let chapters = chapters_map
             .as_ref()
             .map(|map| map.get(&profile.unit_id).map(Vec::as_slice).unwrap_or(&[]));
-        enemies.push(format_enemy_catalog_entry_parts(&profile, name, chapters));
+        enemies.push(format_enemy_catalog_entry_parts(&profile, &name, chapters));
     }
     serde_json::to_string(&json!({ "enemies": enemies }))
         .map_err(|error| format!("序列化敌人资源失败：{error}"))
@@ -534,13 +559,13 @@ fn build_enemies_for_chapter_json_db(
         .map_err(|err| format!("查询第 {chapter_no} 章敌人失败：{err}"))?;
     let mut enemies = Vec::with_capacity(profiles.len());
     for profile in &profiles {
-        let name = resolve_db_zh_clean(&db, &profile.name);
+        let name = resolve_db_zh_text_clean(&db, &profile.name);
         let chapters = db
             .chapters_of_enemy(profile.unit_id)
             .map_err(|err| format!("查询敌人 {} 的章节归属失败：{err}", profile.unit_id))?;
         enemies.push(format_enemy_catalog_entry_parts(
             profile,
-            name,
+            &name,
             Some(&chapters),
         ));
     }
@@ -562,27 +587,39 @@ fn build_skills_json_db(cache: &DbDataCache) -> std::result::Result<String, Stri
     let rows = db
         .all_skills_catalog()
         .map_err(|err| format!("查询技能一览失败：{err}"))?;
+    let untranslated_names: HashMap<i64, String> = db
+        .untranslated_skills(MODEL_LANGUAGE)
+        .map_err(|err| format!("查询未翻译技能名称失败：{err}"))?
+        .into_iter()
+        .filter(|entry| entry.field == "name")
+        .map(|entry| (entry.key, entry.value))
+        .collect();
     let skills: Vec<Value> = rows
         .into_iter()
         .map(|row| {
-            let name = row.name_zh.as_deref().and_then(collapse_ws);
             let skill = row.skill;
-            json!({
-                "skill_id": skill.id,
-                "name": name,
-                "element": element_zh(skill.element),
-                "damage_type": damage_type_code(skill.damage_type),
-                "power": skill.power,
-                "break_damage": skill.break_damage,
-                "cost": skill.cost,
-                "cost_type": cost_type_code(skill.cost_type),
-                "target": format_skill_target(
-                    skill.default_target_relation,
-                    skill.target_type,
-                    skill.default_target_state,
-                ),
-                "available_location": available_location_code(skill.available_location),
-            })
+            let name = ZhText::from_parts_clean(
+                row.name_zh.as_deref(),
+                untranslated_names.get(&skill.id).map(String::as_str),
+            );
+            with_zh_fields(
+                json!({
+                    "skill_id": skill.id,
+                    "element": element_zh(skill.element),
+                    "damage_type": damage_type_code(skill.damage_type),
+                    "power": skill.power,
+                    "break_damage": skill.break_damage,
+                    "cost": skill.cost,
+                    "cost_type": cost_type_code(skill.cost_type),
+                    "target": format_skill_target(
+                        skill.default_target_relation,
+                        skill.target_type,
+                        skill.default_target_state,
+                    ),
+                    "available_location": available_location_code(skill.available_location),
+                }),
+                &[("name", &name)],
+            )
         })
         .collect();
     serde_json::to_string(&json!({ "skills": skills }))
@@ -761,11 +798,18 @@ fn table_description_zh(name: &str) -> Option<&'static str> {
         "stage_report" => "各构建阶段的执行状态、写入行数、耗时与备注。",
         "build_issue" => "构建时记录的悬空引用或异常明细（照实保留不静默丢弃）。",
         // 01_text
-        "text" => "多语言本地化文本表，按命名空间 ns、键 key 与语言 lang 索引。",
+        "text" => {
+            "多语言本地化文本表，按命名空间 ns、键 key 与语言 lang 索引（仅含真正翻译过的非日文条目与全部 ja 原文）。"
+        }
+        "text_untranslated" => {
+            "游戏官方语言文件里未翻译、原样填着日文原文的文本条目（不是我们缺的数据），按 (ns, key, lang) 索引并记录判定原因 reason。"
+        }
         "text_language" => "数据库已导入的本地化语言代码清单（如 zh-Hans、ja、en）。",
         "string_table" => "UE 字符串表路径到命名空间的映射。",
         "string_table_entry" => "字符串表的源语言条目（table_id、key、source）。",
-        "text_fts" => "基于 FTS5 trigram 的全语言文本子串全文索引虚拟表。",
+        "text_fts" => {
+            "基于 FTS5 trigram 的全语言文本子串全文索引虚拟表（仅索引已翻译的 text，不含 text_untranslated）。"
+        }
         // 02_datatable
         "dt_table" => "全部原始 DataTable / CompositeDataTable 的路径、行结构与行数索引。",
         "dt_row" => "全部原始数据表的逐行 JSON 文档（doc），可用 SQLite JSON 函数检索。",
@@ -785,6 +829,15 @@ fn table_description_zh(name: &str) -> Option<&'static str> {
         "unit_ai" => "敌人 AI 配置与高危/斗气招式（high_risk_skill_ids）。",
         "battle_param" => "全局战斗破防倍率与破防增伤参数（单行 id=1）。",
         "enemy_chapter" => "敌人出没章节的静态推导来源（遇敌池/剧情战/陷阱箱）。",
+        "unit_untranslated" => {
+            "unit 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的单位名称与特性字段（不是我们缺的数据）。"
+        }
+        "skill_untranslated" => {
+            "skill 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的技能名称与说明字段（不是我们缺的数据）。"
+        }
+        "command_skill_untranslated" => {
+            "command_skill 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的战斗指令名称与说明字段（不是我们缺的数据）。"
+        }
         // 04_world
         "map" => "全部地图的编号、中文名、关卡名、类型、危险度与设施列表。",
         "island" => "世界地图大区/岛屿名称与显示条件。",
@@ -815,6 +868,45 @@ fn table_description_zh(name: &str) -> Option<&'static str> {
         "item_drop" => "敌人普通/稀有掉落与偷窃道具的概率反查表。",
         "world_name" => "地图与道具的多语言小写归一化名称索引表。",
         "world_name_fts" => "地图与道具名称的 FTS5 trigram 模糊检索虚拟表。",
+        "map_untranslated" => {
+            "map 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的地图名称字段（不是我们缺的数据）。"
+        }
+        "island_untranslated" => {
+            "island 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的岛屿/大区名称字段（不是我们缺的数据）。"
+        }
+        "save_point_command_untranslated" => {
+            "save_point_command 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的存档点指令文字字段（不是我们缺的数据）。"
+        }
+        "item_untranslated" => {
+            "item 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的道具名称与说明字段（不是我们缺的数据）。"
+        }
+        "shop_untranslated" => {
+            "shop 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的商店名称字段（不是我们缺的数据）。"
+        }
+        "quest_untranslated" => {
+            "quest 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的支线任务标题、委托人与目标文字字段（不是我们缺的数据）。"
+        }
+        "quest_prize_untranslated" => {
+            "quest_prize 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的任务奖励文字字段（不是我们缺的数据）。"
+        }
+        "quest_board_untranslated" => {
+            "quest_board 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的委托板任务名称与说明字段（不是我们缺的数据）。"
+        }
+        "chapter_untranslated" => {
+            "chapter 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的章节名称字段（不是我们缺的数据）。"
+        }
+        "main_scenario_untranslated" => {
+            "main_scenario 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的主线目标与梗概文字字段（不是我们缺的数据）。"
+        }
+        "main_quest_untranslated" => {
+            "main_quest 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的主线任务标题字段（不是我们缺的数据）。"
+        }
+        "playable_unit_untranslated" => {
+            "playable_unit 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的可操作角色名称字段（不是我们缺的数据）。"
+        }
+        "item_drop_untranslated" => {
+            "item_drop 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的掉落来源单位名称字段（不是我们缺的数据）。"
+        }
         // 05_assets
         "asset" => "AssetRegistry 全部游戏资源路径、类型、体积与导出状态。",
         "asset_tag" => "资源注册表的键值标签。",
@@ -864,6 +956,12 @@ fn table_description_zh(name: &str) -> Option<&'static str> {
         "level_object_talk" => "关卡对象（NPC/事件触发等）到对话事件的触发关联。",
         "map_unit" => "地图 NPC 单位外貌资产与名称定义（DT_MapUnitAsset）。",
         "class_ref" => "跨区域类名归一化到 ue_class 与 blueprint 的统一映射。",
+        "talk_line_untranslated" => {
+            "talk_line 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的对话台词字段（不是我们缺的数据）。"
+        }
+        "map_unit_untranslated" => {
+            "map_unit 表的未翻译伴随表：记录游戏官方语言文件里未翻译、填的是日文原文的地图单位名称字段（不是我们缺的数据）。"
+        }
         _ => return None,
     })
 }
@@ -876,25 +974,38 @@ mod tests {
     fn db_schema_resource_covers_every_table_with_chinese_description_and_columns() {
         let tables = parse_all_schema_tables();
         assert!(
-            tables.len() >= 70,
-            "expected all ffr-db tables, got {}",
+            tables.len() >= 89,
+            "expected all ffr-db v3 tables (including 19 *_untranslated), got {}",
             tables.len()
         );
+        let mut untranslated_count = 0_usize;
         for tbl in &tables {
-            assert!(
-                table_description_zh(&tbl.name).is_some(),
-                "missing Chinese description for table `{}` in area `{}`",
-                tbl.name,
-                tbl.area
-            );
+            let desc = table_description_zh(&tbl.name).unwrap_or_else(|| {
+                panic!(
+                    "missing Chinese description for table `{}` in area `{}`",
+                    tbl.name, tbl.area
+                )
+            });
+            if tbl.name == "text_untranslated" || tbl.name.ends_with("_untranslated") {
+                untranslated_count += 1;
+                assert!(
+                    desc.contains("未翻译")
+                        && desc.contains("日文原文")
+                        && desc.contains("不是我们缺的数据"),
+                    "untranslated table `{}` description must explain official Japanese text: {desc}",
+                    tbl.name
+                );
+            }
             assert!(
                 !tbl.columns.is_empty(),
                 "parsed 0 columns for table `{}`",
                 tbl.name
             );
         }
+        assert_eq!(untranslated_count, 19);
         let body = build_db_schema_json().expect("build ffr://db/schema JSON");
         let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["schema_version"], 3);
         assert_eq!(parsed["table_count"], tables.len());
     }
 }

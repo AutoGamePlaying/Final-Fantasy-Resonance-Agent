@@ -9,14 +9,11 @@ use std::collections::BTreeSet;
 use agp_game::{Content, ToolCategory, ToolDescriptor, ToolOutput};
 use agp_platform::FileChannel;
 use ffr_data::battle::{
-    AvailableLocation, BattleData, Element, EnemyProfile, Resistance, ResolvedBattleGroup, Skill,
-    SkillAttributeType, SkillCostType, SkillDamageType, SkillTargetType, TargetRelation,
-    TargetState, Unit, UnitCategory,
+    AvailableLocation, BattleData, BreakCalcParams, Element, EnemyProfile, Resistance,
+    ResolvedBattleGroup, Skill, SkillAttributeType, SkillCostType, SkillDamageType,
+    SkillTargetType, TargetRelation, TargetState, Unit, UnitCategory,
 };
-use ffr_data::world::{
-    Item, ItemCategory, MapInfo, Quest, Shop, WorldData, item_summary, map_summary, quest_summary,
-    shop_summary,
-};
+use ffr_data::world::{Item, ItemCategory, ItemDetail, MapInfo, Quest, Shop, WorldData};
 use ffr_data::{
     FTextValue, MODEL_LANGUAGE, MainScenarioEntry, ResolveOptions, TextResolver,
     main_quest_id_for_chapter,
@@ -25,6 +22,10 @@ use serde_json::{Map, Value, json};
 
 use crate::data_cache::{GameDataCache, GameDataSource};
 use crate::data_tools_db::call_data_tool_db;
+use crate::text_format::{
+    ZhText, format_item_ref_zh, format_map_ref_zh, resolve_zh_text_clean, resolve_zh_text_raw,
+    with_zh_fields,
+};
 
 pub(crate) const SEARCH_MAX_RESULTS: usize = 20;
 
@@ -501,26 +502,27 @@ fn handle_read_chapter(
         let mut lines = vec![format!("共 {} 个章节：", scenario.chapters.len())];
         let mut items = Vec::with_capacity(scenario.chapters.len());
         for ch in &scenario.chapters {
-            let name = scenario.chapter_name(ch.chapter_no).text;
+            let name = resolve_zh_text_raw(&scenario.text_resolver, &ch.name);
             let entries = scenario.chapter_main_scenario(ch.chapter_no);
-            let name_display = name.as_deref().unwrap_or("无中文译名");
             lines.push(format!(
-                "- 第 {} 章「{}」（主线 {} 条）",
+                "- 第 {} 章{}（主线 {} 条）",
                 ch.chapter_no,
-                name_display,
+                name.bracketed_or("无中文译名"),
                 entries.len()
             ));
             let main_quest_id = main_quest_id_for_chapter(ch.chapter_no);
             let main_quest_title =
                 main_quest_id.and_then(|qid| scenario.main_quest_title(qid).text);
-            items.push(json!({
-                "chapter_no": ch.chapter_no,
-                "main_quest_id": main_quest_id,
-                "main_quest_title": main_quest_title,
-                "row_key": ch.row_key,
-                "name": name,
-                "main_scenario_count": entries.len(),
-            }));
+            items.push(with_zh_fields(
+                json!({
+                    "chapter_no": ch.chapter_no,
+                    "main_quest_id": main_quest_id,
+                    "main_quest_title": main_quest_title,
+                    "row_key": ch.row_key,
+                    "main_scenario_count": entries.len(),
+                }),
+                &[("name", &name)],
+            ));
         }
         return Ok(tool_ok(lines.join("\n"), json!({ "chapters": items })));
     };
@@ -528,59 +530,60 @@ fn handle_read_chapter(
     let Some(ch) = scenario.find_chapter(chapter_no) else {
         return Err(format!("章节表中找不到第 {chapter_no} 章"));
     };
-    let name = scenario.chapter_name(chapter_no).text;
-    let name_display = name.as_deref().unwrap_or("无中文译名");
+    let name = resolve_zh_text_raw(&scenario.text_resolver, &ch.name);
     let entries = scenario.chapter_main_scenario(chapter_no);
 
     let mut lines = vec![format!(
-        "第 {} 章「{}」（共 {} 条主线剧情）：",
+        "第 {} 章{}（共 {} 条主线剧情）：",
         chapter_no,
-        name_display,
+        name.bracketed_or("无中文译名"),
         entries.len()
     )];
     let mut json_entries = Vec::with_capacity(entries.len());
 
     for entry in &entries {
-        let texts = scenario.resolve_main_scenario_texts(entry);
-        let goal_text = clean_optional(texts.text.text);
-        let summary_text = clean_optional(texts.summary_text.text);
+        let goal_text = resolve_zh_text_clean(&scenario.text_resolver, &entry.text);
+        let summary_text = resolve_zh_text_clean(&scenario.text_resolver, &entry.summary_text);
         let (dest_labels, dest_json) = format_scenario_destinations(entry, world.as_deref());
 
         let progress_str = entry
             .min_progress
             .map_or_else(|| "无进度阈值".to_owned(), |p| format!("进度>={p}"));
-        let goal_display = goal_text.as_deref().unwrap_or("无中文目标");
+        let goal_display = goal_text.inline_or("无中文目标");
         let mut line = format!("- [{progress_str}] {goal_display}");
         if !dest_labels.is_empty() {
             line.push_str(&format!("（目的地：{}）", dest_labels.join("、")));
         }
-        if let Some(summary) = &summary_text {
+        if let Some(summary) = summary_text.inline_opt() {
             line.push_str(&format!(" — {summary}"));
         }
         lines.push(line);
 
-        json_entries.push(json!({
-            "row_key": entry.row_key,
-            "condition": entry.condition,
-            "min_progress": entry.min_progress,
-            "text": goal_text,
-            "summary": summary_text,
-            "destinations": dest_json,
-        }));
+        json_entries.push(with_zh_fields(
+            json!({
+                "row_key": entry.row_key,
+                "condition": entry.condition,
+                "min_progress": entry.min_progress,
+                "destinations": dest_json,
+            }),
+            &[("text", &goal_text), ("summary", &summary_text)],
+        ));
     }
 
     let main_quest_id = main_quest_id_for_chapter(ch.chapter_no);
     let main_quest_title = main_quest_id.and_then(|qid| scenario.main_quest_title(qid).text);
     Ok(tool_ok(
         lines.join("\n"),
-        json!({
-            "chapter_no": ch.chapter_no,
-            "main_quest_id": main_quest_id,
-            "main_quest_title": main_quest_title,
-            "row_key": ch.row_key,
-            "name": name,
-            "main_scenario": json_entries,
-        }),
+        with_zh_fields(
+            json!({
+                "chapter_no": ch.chapter_no,
+                "main_quest_id": main_quest_id,
+                "main_quest_title": main_quest_title,
+                "row_key": ch.row_key,
+                "main_scenario": json_entries,
+            }),
+            &[("name", &name)],
+        ),
     ))
 }
 
@@ -621,15 +624,23 @@ enum MapLookup<'a> {
 }
 
 fn format_map_output(world: &WorldData, map: &MapInfo) -> ToolOutput {
-    let base_summary = map_summary(world, map);
-    let name = resolve_zh_clean(world.text_resolver(), &map.name);
+    let name = resolve_zh_text_clean(world.text_resolver(), &map.name);
     let island_name = world
         .island_by_type(&map.island)
-        .and_then(|island| resolve_zh_clean(world.text_resolver(), &island.name));
+        .map(|island| resolve_zh_text_clean(world.text_resolver(), &island.name))
+        .unwrap_or_default();
 
     let save_point = world.save_point_for_map_type(&map.map_type);
     let teleport_points = world.teleport_points_for_map(map.id);
     let treasure_boxes = world.treasure_boxes_in_map(map.id);
+    let base_summary = build_map_summary_shared(
+        map,
+        &name,
+        &island_name,
+        !teleport_points.is_empty(),
+        save_point,
+        treasure_boxes.len(),
+    );
 
     let shop_facilities: Vec<&str> = map
         .facilities
@@ -701,20 +712,23 @@ fn format_map_output(world: &WorldData, map: &MapInfo) -> ToolOutput {
             let item_name = chest
                 .item_id
                 .and_then(|id| world.item_by_id(id))
-                .and_then(|item| resolve_zh_clean(world.text_resolver(), &item.name));
-            json!({
-                "box_id": chest.id,
-                "unique_id": null,
-                "item_id": chest.item_id,
-                "item_name": item_name,
-                "item_num": chest.item_num,
-                "money": chest.money,
-                "is_trap": chest.is_trap,
-                "battle_group_id": chest.battle_group_id,
-                "battle_finish_event_id": chest.battle_finish_event_id,
-                "location": null,
-                "visible_condition": null,
-            })
+                .map(|item| resolve_zh_text_clean(world.text_resolver(), &item.name))
+                .unwrap_or_default();
+            with_zh_fields(
+                json!({
+                    "box_id": chest.id,
+                    "unique_id": null,
+                    "item_id": chest.item_id,
+                    "item_num": chest.item_num,
+                    "money": chest.money,
+                    "is_trap": chest.is_trap,
+                    "battle_group_id": chest.battle_group_id,
+                    "battle_finish_event_id": chest.battle_finish_event_id,
+                    "location": null,
+                    "visible_condition": null,
+                }),
+                &[("item_name", &item_name)],
+            )
         })
         .collect();
 
@@ -732,32 +746,33 @@ fn format_map_output(world: &WorldData, map: &MapInfo) -> ToolOutput {
 
     tool_ok(
         summary_lines.join("\n"),
-        json!({
-            "map_id": map.id,
-            "row_key": map.row_key,
-            "name": name,
-            "level_name": map.level_name,
-            "level_asset_path": map.level_asset_path,
-            "map_type": map.map_type,
-            "dungeon_type": map.dungeon_type,
-            "island": map.island,
-            "island_name": island_name,
-            "region_id": map.region_id,
-            "danger_level": map.danger_level,
-            "do_movement_encount": map.do_movement_encount,
-            "encount_group_id": map.encount_group_id,
-            "save_point": save_point_json,
-            "save_points": [],
-            "teleportable": !teleport_points.is_empty(),
-            "teleport_points": teleport_json,
-            "exits": [],
-            "npcs": [],
-            "shops": [],
-            "treasure_boxes": treasures_json,
-            "encounter_zones": [],
-            "shop_facilities": shop_facilities,
-            "facilities": facilities_json,
-        }),
+        with_zh_fields(
+            json!({
+                "map_id": map.id,
+                "row_key": map.row_key,
+                "level_name": map.level_name,
+                "level_asset_path": map.level_asset_path,
+                "map_type": map.map_type,
+                "dungeon_type": map.dungeon_type,
+                "island": map.island,
+                "region_id": map.region_id,
+                "danger_level": map.danger_level,
+                "do_movement_encount": map.do_movement_encount,
+                "encount_group_id": map.encount_group_id,
+                "save_point": save_point_json,
+                "save_points": [],
+                "teleportable": !teleport_points.is_empty(),
+                "teleport_points": teleport_json,
+                "exits": [],
+                "npcs": [],
+                "shops": [],
+                "treasure_boxes": treasures_json,
+                "encounter_zones": [],
+                "shop_facilities": shop_facilities,
+                "facilities": facilities_json,
+            }),
+            &[("name", &name), ("island_name", &island_name)],
+        ),
     )
 }
 
@@ -820,15 +835,27 @@ fn format_enemy_output(
     chapter_index: Option<&ffr_data::battle::EnemyChapterIndex>,
 ) -> Result<ToolOutput, String> {
     let profile = unit.to_enemy_profile(battle.unit_ai_by_id(unit.id));
-    let resolved_name = battle.unit_name_in(unit.id, MODEL_LANGUAGE);
-    let mut summary = match battle.enemy_summary(unit.id, MODEL_LANGUAGE) {
-        Ok(text) => text,
-        Err(ffr_data::DataError::InvalidSchema { .. }) => {
-            // Unit exists but lacks a zh-Hans localization entry; report honestly without faking ja.
-            format_fallback_enemy_summary(battle, &profile, resolved_name.text.as_deref())
-        }
-        Err(error) => return Err(format!("生成敌人摘要失败：{error}")),
-    };
+    let resolved_name = resolve_zh_text_raw(&battle.text_resolver, &unit.name);
+    let high_risk_resolved: Vec<(i64, bool, ZhText)> = profile
+        .high_risk_skill_ids
+        .iter()
+        .map(|&skill_id| match battle.skill_by_id(skill_id) {
+            Some(skill) => (
+                skill_id,
+                true,
+                resolve_zh_text_raw(&battle.text_resolver, &skill.name),
+            ),
+            None => (skill_id, false, ZhText::Missing),
+        })
+        .collect();
+
+    let mut summary = format_enemy_summary_shared(
+        &battle.break_calc,
+        &profile,
+        &resolved_name,
+        &high_risk_resolved,
+    );
+
     let chapters = chapter_index.map(|idx| idx.chapters_for_enemy(unit.id).to_vec());
     if let Some(ch_list) = &chapters
         && !ch_list.is_empty()
@@ -837,10 +864,14 @@ fn format_enemy_output(
         summary.push_str(&format!("\n出没章节：{}", joined.join("、")));
     }
 
-    let lookup_item_name = |item_id: i64| -> Option<String> {
-        let w = world?;
-        let it = w.item_by_id(item_id)?;
-        resolve_zh_clean(w.text_resolver(), &it.name)
+    let lookup_item_name = |item_id: i64| -> ZhText {
+        let Some(w) = world else {
+            return ZhText::Missing;
+        };
+        let Some(it) = w.item_by_id(item_id) else {
+            return ZhText::Missing;
+        };
+        resolve_zh_text_clean(w.text_resolver(), &it.name)
     };
     let (drops_json, steals_json, drop_line, steal_line) =
         build_enemy_drops_and_steals(unit, lookup_item_name);
@@ -862,60 +893,55 @@ fn format_enemy_output(
         summary.push_str(&format!("\n{line}"));
     }
 
-    let high_risk_skills: Vec<Value> = profile
-        .high_risk_skill_ids
+    let high_risk_skills: Vec<Value> = high_risk_resolved
         .iter()
-        .map(|&skill_id| {
-            let skill_name = battle
-                .skill_name_in(skill_id, MODEL_LANGUAGE)
-                .text
-                .and_then(|t| collapse_ws(&t));
-            json!({
-                "skill_id": skill_id,
-                "name": skill_name,
-            })
+        .map(|(skill_id, _, raw)| {
+            let skill_name = raw.cleaned();
+            with_zh_fields(json!({ "skill_id": skill_id }), &[("name", &skill_name)])
         })
         .collect();
 
-    let payload = json!({
-        "unit_id": profile.unit_id,
-        "row_key": profile.row_key,
-        "name": resolved_name.text,
-        "category": unit_category_code(profile.category),
-        "level": profile.level,
-        "is_boss": profile.is_boss,
-        "max_hp": profile.max_hp,
-        "max_mp": profile.max_mp,
-        "max_break_point": profile.max_break_point,
-        "stats": {
-            "attack": profile.attack,
-            "defence": profile.defence,
-            "intelligence": profile.intelligence,
-            "mind": profile.mind,
-            "divine": profile.divine,
-            "agility": profile.agility,
-        },
-        "weaknesses": elements_zh_vec(&profile.weaknesses),
-        "weakness_elements": elements_code_vec(&profile.weaknesses),
-        "resistances": {
-            "halved": elements_zh_vec(&profile.halved),
-            "invalid": elements_zh_vec(&profile.invalid),
-            "absorb": elements_zh_vec(&profile.absorb),
-        },
-        "break_calc": {
-            "weakness_multiplier": battle
-                .break_calc
-                .break_element_multipliers
-                .get(&Resistance::Weakness)
-                .copied(),
-            "break_damage_magnification": battle.break_calc.break_damage_magnification,
-        },
-        "high_risk_skills": high_risk_skills,
-        "drops": drops_json,
-        "steals": steals_json,
-        "chapters": chapters,
-        "battle_groups": battle_groups_json,
-    });
+    let payload = with_zh_fields(
+        json!({
+            "unit_id": profile.unit_id,
+            "row_key": profile.row_key,
+            "category": unit_category_code(profile.category),
+            "level": profile.level,
+            "is_boss": profile.is_boss,
+            "max_hp": profile.max_hp,
+            "max_mp": profile.max_mp,
+            "max_break_point": profile.max_break_point,
+            "stats": {
+                "attack": profile.attack,
+                "defence": profile.defence,
+                "intelligence": profile.intelligence,
+                "mind": profile.mind,
+                "divine": profile.divine,
+                "agility": profile.agility,
+            },
+            "weaknesses": elements_zh_vec(&profile.weaknesses),
+            "weakness_elements": elements_code_vec(&profile.weaknesses),
+            "resistances": {
+                "halved": elements_zh_vec(&profile.halved),
+                "invalid": elements_zh_vec(&profile.invalid),
+                "absorb": elements_zh_vec(&profile.absorb),
+            },
+            "break_calc": {
+                "weakness_multiplier": battle
+                    .break_calc
+                    .break_element_multipliers
+                    .get(&Resistance::Weakness)
+                    .copied(),
+                "break_damage_magnification": battle.break_calc.break_damage_magnification,
+            },
+            "high_risk_skills": high_risk_skills,
+            "drops": drops_json,
+            "steals": steals_json,
+            "chapters": chapters,
+            "battle_groups": battle_groups_json,
+        }),
+        &[("name", &resolved_name)],
+    );
 
     Ok(tool_ok(summary, payload))
 }
@@ -925,23 +951,22 @@ pub(crate) fn build_enemy_drops_and_steals<F>(
     mut resolve_item_name: F,
 ) -> (Value, Value, Option<String>, Option<String>)
 where
-    F: FnMut(i64) -> Option<String>,
+    F: FnMut(i64) -> ZhText,
 {
     let mut make_slot = |item_id: i64, rate: i64, label: &str| -> (Value, Option<String>) {
         if item_id < 0 {
             return (Value::Null, None);
         }
         let item_name = resolve_item_name(item_id);
-        let display = match &item_name {
-            Some(n) => format!("{n}（#{item_id}）"),
-            None => format!("道具 #{item_id}"),
-        };
+        let display = format_item_ref_zh(item_id, &item_name);
         (
-            json!({
-                "item_id": item_id,
-                "item_name": item_name,
-                "rate": rate,
-            }),
+            with_zh_fields(
+                json!({
+                    "item_id": item_id,
+                    "rate": rate,
+                }),
+                &[("item_name", &item_name)],
+            ),
             Some(format!("{label} {display} {rate}%")),
         )
     };
@@ -1075,17 +1100,13 @@ fn format_battle_group_output(battle: &BattleData, resolved: &ResolvedBattleGrou
     let mut members_json = Vec::with_capacity(resolved.members.len());
 
     for member in &resolved.members {
-        let name = battle
-            .unit_name_in(member.unit_id, MODEL_LANGUAGE)
-            .text
-            .and_then(|t| collapse_ws(&t));
-        let name_display = name.as_deref().unwrap_or("无中文译名");
+        let name = resolve_zh_text_clean(&battle.text_resolver, &member.name);
         let role = if member.is_boss { "Boss" } else { "普通" };
         let weak = join_elements_zh(&member.weaknesses);
         lines.push(format!(
-            "- unit_id={}「{}」（Lv.{}，{}，HP {}，破防槽 {}，弱点：{}）",
+            "- unit_id={}{}（Lv.{}，{}，HP {}，破防槽 {}，弱点：{}）",
             member.unit_id,
-            name_display,
+            name.bracketed_or("无中文译名"),
             member.level,
             role,
             member.max_hp,
@@ -1093,21 +1114,23 @@ fn format_battle_group_output(battle: &BattleData, resolved: &ResolvedBattleGrou
             weak
         ));
 
-        members_json.push(json!({
-            "unit_id": member.unit_id,
-            "name": name,
-            "level": member.level,
-            "is_boss": member.is_boss,
-            "max_hp": member.max_hp,
-            "max_break_point": member.max_break_point,
-            "weaknesses": elements_zh_vec(&member.weaknesses),
-            "resistances": {
-                "halved": elements_zh_vec(&member.halved),
-                "invalid": elements_zh_vec(&member.invalid),
-                "absorb": elements_zh_vec(&member.absorb),
-            },
-            "high_risk_skill_ids": member.high_risk_skill_ids,
-        }));
+        members_json.push(with_zh_fields(
+            json!({
+                "unit_id": member.unit_id,
+                "level": member.level,
+                "is_boss": member.is_boss,
+                "max_hp": member.max_hp,
+                "max_break_point": member.max_break_point,
+                "weaknesses": elements_zh_vec(&member.weaknesses),
+                "resistances": {
+                    "halved": elements_zh_vec(&member.halved),
+                    "invalid": elements_zh_vec(&member.invalid),
+                    "absorb": elements_zh_vec(&member.absorb),
+                },
+                "high_risk_skill_ids": member.high_risk_skill_ids,
+            }),
+            &[("name", &name)],
+        ));
     }
 
     tool_ok(
@@ -1172,69 +1195,74 @@ fn handle_read_skill(
 }
 
 fn format_skill_output(battle: &BattleData, skill: &Skill) -> ToolOutput {
-    let name = battle
-        .skill_name_in(skill.id, MODEL_LANGUAGE)
-        .text
-        .and_then(|t| collapse_ws(&t));
-    let description = resolve_zh_clean(&battle.text_resolver, &skill.description);
-    let name_display = name.as_deref().unwrap_or("无中文译名");
-    let element_zh = element_zh(skill.element);
-    let damage_zh = damage_type_zh(skill.damage_type);
-    let attr_zh = skill_attr_zh(skill.skill_attr_type);
+    let name = resolve_zh_text_clean(&battle.text_resolver, &skill.name);
+    let description = resolve_zh_text_clean(&battle.text_resolver, &skill.description);
+    format_skill_output_parts(skill, &name, &description)
+}
+
+pub(crate) fn format_skill_output_parts(
+    skill: &Skill,
+    name: &ZhText,
+    description: &ZhText,
+) -> ToolOutput {
+    let element_label = element_zh(skill.element);
+    let damage_label = damage_type_zh(skill.damage_type);
+    let attr_label = skill_attr_zh(skill.skill_attr_type);
     let cost_label = format_skill_cost(skill.cost, skill.cost_type);
     let target_label = format_skill_target(
         skill.default_target_relation,
         skill.target_type,
         skill.default_target_state,
     );
-    let loc_zh = available_location_zh(skill.available_location);
+    let loc_label = available_location_zh(skill.available_location);
 
     let mut summary = format!(
-        "技能 #{}「{}」（{}/{}）；属性：{}；威力：{}；破防削减：{}；消耗：{}；目标：{}；场合：{}",
+        "技能 #{}{}（{}/{}）；属性：{}；威力：{}；破防削减：{}；消耗：{}；目标：{}；场合：{}",
         skill.id,
-        name_display,
-        attr_zh,
-        damage_zh,
-        element_zh,
+        name.bracketed_or("无中文译名"),
+        attr_label,
+        damage_label,
+        element_label,
         skill.power,
         skill.break_damage,
         cost_label,
         target_label,
-        loc_zh,
+        loc_label,
     );
     if skill.hit_count > 1 {
         summary.push_str(&format!("；段数：{}", skill.hit_count));
     }
-    if let Some(desc) = &description {
+    if let Some(desc) = description.inline_opt() {
         summary.push_str(&format!("；说明：{desc}"));
     }
 
     tool_ok(
         summary,
-        json!({
-            "skill_id": skill.id,
-            "row_key": skill.row_key,
-            "name": name,
-            "description": description,
-            "element": element_zh,
-            "element_code": element_code(skill.element),
-            "damage_type": damage_type_code(skill.damage_type),
-            "skill_attr_type": skill_attr_code(skill.skill_attr_type),
-            "power": skill.power,
-            "break_damage": skill.break_damage,
-            "cost": skill.cost,
-            "cost_type": cost_type_code(skill.cost_type),
-            "cost_label": cost_label,
-            "target_type": target_type_code(skill.target_type),
-            "target_relation": target_relation_code(skill.default_target_relation),
-            "target_state": target_state_code(skill.default_target_state),
-            "target_label": target_label,
-            "hit_count": skill.hit_count,
-            "accuracy": skill.accuracy,
-            "critical_hit_rate": skill.critical_hit_rate,
-            "available_location": available_location_code(skill.available_location),
-            "effect_ids": skill.effect_ids,
-        }),
+        with_zh_fields(
+            json!({
+                "skill_id": skill.id,
+                "row_key": skill.row_key,
+                "element": element_label,
+                "element_code": element_code(skill.element),
+                "damage_type": damage_type_code(skill.damage_type),
+                "skill_attr_type": skill_attr_code(skill.skill_attr_type),
+                "power": skill.power,
+                "break_damage": skill.break_damage,
+                "cost": skill.cost,
+                "cost_type": cost_type_code(skill.cost_type),
+                "cost_label": cost_label,
+                "target_type": target_type_code(skill.target_type),
+                "target_relation": target_relation_code(skill.default_target_relation),
+                "target_state": target_state_code(skill.default_target_state),
+                "target_label": target_label,
+                "hit_count": skill.hit_count,
+                "accuracy": skill.accuracy,
+                "critical_hit_rate": skill.critical_hit_rate,
+                "available_location": available_location_code(skill.available_location),
+                "effect_ids": skill.effect_ids,
+            }),
+            &[("name", name), ("description", description)],
+        ),
     )
 }
 
@@ -1330,11 +1358,20 @@ fn handle_read_item(
 }
 
 fn format_item_output(world: &WorldData, item: &Item) -> ToolOutput {
-    let mut summary = item_summary(world, item);
-    let name = resolve_zh_clean(world.text_resolver(), &item.name);
-    let description = resolve_zh_clean(world.text_resolver(), &item.description);
+    let name = resolve_zh_text_clean(world.text_resolver(), &item.name);
+    let description = resolve_zh_text_clean(world.text_resolver(), &item.description);
     let shops = world.shops_selling_item(item.id);
     let sold_in_shop_ids: Vec<i64> = shops.iter().map(|shop| shop.id).collect();
+    format_item_output_parts(item, &name, &description, sold_in_shop_ids)
+}
+
+pub(crate) fn format_item_output_parts(
+    item: &Item,
+    name: &ZhText,
+    description: &ZhText,
+    sold_in_shop_ids: Vec<i64>,
+) -> ToolOutput {
+    let mut summary = build_item_summary_shared(item, name, description);
     if !sold_in_shop_ids.is_empty() {
         let shop_ids_str: Vec<String> =
             sold_in_shop_ids.iter().map(|id| format!("#{id}")).collect();
@@ -1343,19 +1380,20 @@ fn format_item_output(world: &WorldData, item: &Item) -> ToolOutput {
 
     tool_ok(
         summary,
-        json!({
-            "item_id": item.id,
-            "row_key": item.row_key,
-            "name": name,
-            "description": description,
-            "category": item.category,
-            "category_label": item_category_zh(item.category),
-            "buying_price": item.buying_price,
-            "selling_price": item.selling_price,
-            "is_available_sale": item.is_available_sale,
-            "detail": item.detail,
-            "sold_in_shop_ids": sold_in_shop_ids,
-        }),
+        with_zh_fields(
+            json!({
+                "item_id": item.id,
+                "row_key": item.row_key,
+                "category": item.category,
+                "category_label": item_category_zh(item.category),
+                "buying_price": item.buying_price,
+                "selling_price": item.selling_price,
+                "is_available_sale": item.is_available_sale,
+                "detail": item.detail,
+                "sold_in_shop_ids": sold_in_shop_ids,
+            }),
+            &[("name", name), ("description", description)],
+        ),
     )
 }
 
@@ -1461,17 +1499,20 @@ fn handle_read_quest(
     let mut lines = vec![format!("第 {ch} 章支线任务（共 {} 个）：", quests.len())];
     let mut items = Vec::with_capacity(quests.len());
     for quest in &quests {
-        let title = resolve_zh_clean(world.text_resolver(), &quest.title);
-        lines.push(format!("- {}", quest_summary(&world, quest)));
-        items.push(json!({
-            "quest_id": quest.id,
-            "row_key": quest.row_key,
-            "title": title,
-            "chapter_no": quest.chapter_no,
-            "requester_map_id": quest.requester_map_id,
-            "report_map_id": quest.report_map_id,
-            "accept_condition": quest.accept_condition,
-        }));
+        let title = resolve_zh_text_clean(world.text_resolver(), &quest.title);
+        let summary = build_quest_summary_json(&world, quest);
+        lines.push(format!("- {summary}"));
+        items.push(with_zh_fields(
+            json!({
+                "quest_id": quest.id,
+                "row_key": quest.row_key,
+                "chapter_no": quest.chapter_no,
+                "requester_map_id": quest.requester_map_id,
+                "report_map_id": quest.report_map_id,
+                "accept_condition": quest.accept_condition,
+            }),
+            &[("title", &title)],
+        ));
     }
     Ok(tool_ok(
         lines.join("\n"),
@@ -1479,42 +1520,92 @@ fn handle_read_quest(
     ))
 }
 
+fn build_quest_summary_json(world: &WorldData, quest: &Quest) -> String {
+    let title = resolve_zh_text_clean(world.text_resolver(), &quest.title);
+    let chapter_name = quest.chapter_no.map(|ch| {
+        world
+            .chapters()
+            .iter()
+            .find(|c| c.chapter_no == ch)
+            .map(|c| resolve_zh_text_clean(world.text_resolver(), &c.name))
+            .unwrap_or_default()
+    });
+    let requester = resolve_zh_text_clean(world.text_resolver(), &quest.requester);
+    let requester_map_name = quest.requester_map_id.map(|map_id| {
+        world
+            .map_by_id(map_id)
+            .map(|m| resolve_zh_text_clean(world.text_resolver(), &m.name))
+            .unwrap_or_default()
+    });
+    let goals: Vec<ZhText> = quest
+        .objectives
+        .iter()
+        .map(|stage| resolve_zh_text_clean(world.text_resolver(), &stage.goal_text))
+        .collect();
+    let prizes: Vec<(Option<i64>, ZhText, i64, ZhText)> = quest
+        .prizes
+        .iter()
+        .map(|prize| {
+            let item_name = prize
+                .item_id
+                .and_then(|id| world.item_by_id(id))
+                .map(|it| resolve_zh_text_clean(world.text_resolver(), &it.name))
+                .unwrap_or_default();
+            let text = resolve_zh_text_clean(world.text_resolver(), &prize.text);
+            (prize.item_id, item_name, prize.count, text)
+        })
+        .collect();
+    build_quest_summary_shared(
+        quest,
+        &title,
+        chapter_name.as_ref(),
+        &requester,
+        requester_map_name.as_ref(),
+        &goals,
+        &prizes,
+    )
+}
+
 fn format_quest_output(world: &WorldData, quest: &Quest) -> ToolOutput {
-    let summary = quest_summary(world, quest);
-    let title = resolve_zh_clean(world.text_resolver(), &quest.title);
-    let requester = resolve_zh_clean(world.text_resolver(), &quest.requester);
+    let summary = build_quest_summary_json(world, quest);
+    let title = resolve_zh_text_clean(world.text_resolver(), &quest.title);
+    let requester = resolve_zh_text_clean(world.text_resolver(), &quest.requester);
 
     let objectives: Vec<Value> = quest
         .objectives
         .iter()
         .map(|stage| {
-            let goal_text = resolve_zh_clean(world.text_resolver(), &stage.goal_text);
-            let summary_text = resolve_zh_clean(world.text_resolver(), &stage.summary_text);
+            let goal_text = resolve_zh_text_clean(world.text_resolver(), &stage.goal_text);
+            let summary_text = resolve_zh_text_clean(world.text_resolver(), &stage.summary_text);
             let destinations: Vec<Value> = stage
                 .destinations
                 .iter()
                 .map(|dest| {
                     let map_name = world
                         .map_by_id(dest.destination_id)
-                        .and_then(|m| resolve_zh_clean(world.text_resolver(), &m.name));
-                    json!({
-                        "map_id": dest.destination_id,
-                        "map_name": map_name,
-                        "point_type": dest.point_type,
-                        "destination_type": dest.destination_type,
-                        "object_type": dest.object_type,
-                        "object_id": dest.object_id,
-                        "condition": dest.condition,
-                    })
+                        .map(|m| resolve_zh_text_clean(world.text_resolver(), &m.name))
+                        .unwrap_or_default();
+                    with_zh_fields(
+                        json!({
+                            "map_id": dest.destination_id,
+                            "point_type": dest.point_type,
+                            "destination_type": dest.destination_type,
+                            "object_type": dest.object_type,
+                            "object_id": dest.object_id,
+                            "condition": dest.condition,
+                        }),
+                        &[("map_name", &map_name)],
+                    )
                 })
                 .collect();
-            json!({
-                "condition": stage.condition,
-                "goal_text": goal_text,
-                "summary_text": summary_text,
-                "destinations": destinations,
-                "quest_board_ids": stage.quest_board_ids,
-            })
+            with_zh_fields(
+                json!({
+                    "condition": stage.condition,
+                    "destinations": destinations,
+                    "quest_board_ids": stage.quest_board_ids,
+                }),
+                &[("goal_text", &goal_text), ("summary_text", &summary_text)],
+            )
         })
         .collect();
 
@@ -1525,36 +1616,39 @@ fn format_quest_output(world: &WorldData, quest: &Quest) -> ToolOutput {
             let item_name = prize
                 .item_id
                 .and_then(|id| world.item_by_id(id))
-                .and_then(|item| resolve_zh_clean(world.text_resolver(), &item.name));
-            let text = resolve_zh_clean(world.text_resolver(), &prize.text);
-            json!({
-                "item_id": prize.item_id,
-                "item_name": item_name,
-                "count": prize.count,
-                "text": text,
-            })
+                .map(|item| resolve_zh_text_clean(world.text_resolver(), &item.name))
+                .unwrap_or_default();
+            let text = resolve_zh_text_clean(world.text_resolver(), &prize.text);
+            with_zh_fields(
+                json!({
+                    "item_id": prize.item_id,
+                    "count": prize.count,
+                }),
+                &[("item_name", &item_name), ("text", &text)],
+            )
         })
         .collect();
 
     tool_ok(
         summary,
-        json!({
-            "quest_id": quest.id,
-            "row_key": quest.row_key,
-            "title": title,
-            "chapter_no": quest.chapter_no,
-            "min_main_progress": quest.min_main_progress,
-            "category": quest.category,
-            "requester": requester,
-            "requester_map_id": quest.requester_map_id,
-            "report_map_id": quest.report_map_id,
-            "accept_condition": quest.accept_condition,
-            "occurrence_condition": quest.occurrence_condition,
-            "achievement_condition": quest.achievement_condition,
-            "completion_condition": quest.completion_condition,
-            "objectives": objectives,
-            "prizes": prizes,
-        }),
+        with_zh_fields(
+            json!({
+                "quest_id": quest.id,
+                "row_key": quest.row_key,
+                "chapter_no": quest.chapter_no,
+                "min_main_progress": quest.min_main_progress,
+                "category": quest.category,
+                "requester_map_id": quest.requester_map_id,
+                "report_map_id": quest.report_map_id,
+                "accept_condition": quest.accept_condition,
+                "occurrence_condition": quest.occurrence_condition,
+                "achievement_condition": quest.achievement_condition,
+                "completion_condition": quest.completion_condition,
+                "objectives": objectives,
+                "prizes": prizes,
+            }),
+            &[("title", &title), ("requester", &requester)],
+        ),
     )
 }
 
@@ -1644,36 +1738,42 @@ fn handle_read_shop(
     }
 
     let target_item_id = item_id.expect("exactly one parameter was provided");
-    let item_name = world
-        .item_by_id(target_item_id)
-        .and_then(|item| resolve_zh_clean(world.text_resolver(), &item.name));
-    let item_label = match &item_name {
-        Some(n) => format!("道具 #{target_item_id}「{n}」"),
-        None if world.item_by_id(target_item_id).is_some() => {
-            format!("道具 #{target_item_id}（无中文译名）")
+    let target_item = world.item_by_id(target_item_id);
+    let item_name = target_item
+        .map(|item| resolve_zh_text_clean(world.text_resolver(), &item.name))
+        .unwrap_or_default();
+    let item_label = match (&item_name, target_item.is_some()) {
+        (ZhText::Translated(n), _) => format!("道具 #{target_item_id}「{n}」"),
+        (ZhText::Untranslated { ja }, _) => {
+            format!("道具 #{target_item_id}{}", ZhText::format_untranslated(ja))
         }
-        None => format!("编号 #{target_item_id}（道具表未收录）"),
+        (ZhText::Missing, true) => format!("道具 #{target_item_id}（无中文译名）"),
+        (ZhText::Missing, false) => format!("编号 #{target_item_id}（道具表未收录）"),
     };
 
     let shops = world.shops_selling_item(target_item_id);
     if shops.is_empty() {
         return Ok(tool_ok(
             format!("没有商店出售{item_label}。"),
-            json!({
-                "item_id": target_item_id,
-                "item_name": item_name,
-                "shops": [],
-            }),
+            with_zh_fields(
+                json!({
+                    "item_id": target_item_id,
+                    "shops": [],
+                }),
+                &[("item_name", &item_name)],
+            ),
         ));
     }
 
     let mut lines = vec![format!("出售{item_label}的商店（共 {} 家）：", shops.len())];
     let mut shops_json = Vec::with_capacity(shops.len());
     for shop in &shops {
-        let shop_name = resolve_zh_clean(world.text_resolver(), &shop.name);
-        let shop_display = shop_name
-            .as_deref()
-            .map_or_else(|| "无中文店名".to_owned(), |n| format!("「{n}」"));
+        let shop_name = resolve_zh_text_clean(world.text_resolver(), &shop.name);
+        let shop_display = match &shop_name {
+            ZhText::Translated(n) => format!("「{n}」"),
+            ZhText::Untranslated { ja } => ZhText::format_untranslated(ja),
+            ZhText::Missing => "无中文店名".to_owned(),
+        };
         let offers: Vec<Value> = shop
             .items
             .iter()
@@ -1697,68 +1797,110 @@ fn handle_read_shop(
             "- shop_id={}{shop_display}（{price_desc}）",
             shop.id
         ));
-        shops_json.push(json!({
-            "shop_id": shop.id,
-            "row_key": shop.row_key,
-            "name": shop_name,
-            "offers": offers,
-        }));
+        shops_json.push(with_zh_fields(
+            json!({
+                "shop_id": shop.id,
+                "row_key": shop.row_key,
+                "offers": offers,
+            }),
+            &[("name", &shop_name)],
+        ));
     }
 
     Ok(tool_ok(
         lines.join("\n"),
-        json!({
-            "item_id": target_item_id,
-            "item_name": item_name,
-            "shops": shops_json,
-        }),
+        with_zh_fields(
+            json!({
+                "item_id": target_item_id,
+                "shops": shops_json,
+            }),
+            &[("item_name", &item_name)],
+        ),
     ))
 }
 
 fn format_shop_output(world: &WorldData, shop: &Shop) -> ToolOutput {
-    let summary = shop_summary(world, shop);
-    let name = resolve_zh_clean(world.text_resolver(), &shop.name);
-    let items: Vec<Value> = shop
-        .items
-        .iter()
-        .map(|entry| {
-            let item_name = world
-                .item_by_id(entry.item_id)
-                .and_then(|item| resolve_zh_clean(world.text_resolver(), &item.name));
+    let name = resolve_zh_text_clean(world.text_resolver(), &shop.name);
+    let shop_title = format!("商店 #{}{}", shop.id, name.bracketed_or_paren("无中文店名"));
+
+    let mut goods = Vec::with_capacity(shop.items.len());
+    let mut items = Vec::with_capacity(shop.items.len());
+    for entry in &shop.items {
+        let item_opt = world.item_by_id(entry.item_id);
+        let item_name = item_opt
+            .map(|item| resolve_zh_text_clean(world.text_resolver(), &item.name))
+            .unwrap_or_default();
+        let price = world.shop_item_price(entry);
+        let (display_name, price_str) = match (item_opt, price) {
+            (Some(_), Some(p)) => (item_name.inline_or("无中文译名"), format!("{p}G")),
+            (Some(it), None) => (
+                item_name.inline_or("无中文译名"),
+                format!("{}G", entry.effective_price(it.buying_price)),
+            ),
+            (None, _) => (
+                format!("未知道具 #{}", entry.item_id),
+                "价格未知".to_owned(),
+            ),
+        };
+        let limit = match entry.max_order_num {
+            Some(max) => format!("，限购 {max}"),
+            None => String::new(),
+        };
+        goods.push(format!(
+            "{display_name}（#{}，{price_str}{limit}）",
+            entry.item_id
+        ));
+        items.push(with_zh_fields(
             json!({
                 "item_id": entry.item_id,
-                "item_name": item_name,
-                "price": world.shop_item_price(entry),
+                "price": price,
                 "max_order_num": entry.max_order_num,
                 "price_ratio": entry.price_ratio,
                 "condition": entry.condition,
-            })
-        })
-        .collect();
+            }),
+            &[("item_name", &item_name)],
+        ));
+    }
+
+    let summary = if goods.is_empty() {
+        format!("{shop_title}：暂无商品")
+    } else {
+        format!(
+            "{shop_title}（共 {} 件）：{}",
+            goods.len(),
+            goods.join("、")
+        )
+    };
+
     let sell_items: Vec<Value> = shop
         .sell_items
         .iter()
         .map(|entry| {
             let item_name = world
                 .item_by_id(entry.item_id)
-                .and_then(|item| resolve_zh_clean(world.text_resolver(), &item.name));
-            json!({
-                "item_id": entry.item_id,
-                "item_name": item_name,
-                "price_ratio": entry.price_ratio,
-            })
+                .map(|item| resolve_zh_text_clean(world.text_resolver(), &item.name))
+                .unwrap_or_default();
+            with_zh_fields(
+                json!({
+                    "item_id": entry.item_id,
+                    "price_ratio": entry.price_ratio,
+                }),
+                &[("item_name", &item_name)],
+            )
         })
         .collect();
 
     tool_ok(
         summary,
-        json!({
-            "shop_id": shop.id,
-            "row_key": shop.row_key,
-            "name": name,
-            "items": items,
-            "sell_items": sell_items,
-        }),
+        with_zh_fields(
+            json!({
+                "shop_id": shop.id,
+                "row_key": shop.row_key,
+                "items": items,
+                "sell_items": sell_items,
+            }),
+            &[("name", &name)],
+        ),
     )
 }
 
@@ -1855,8 +1997,76 @@ pub(crate) struct SearchHit {
     pub(crate) rank: u8,
     pub(crate) kind: SearchKind,
     pub(crate) id: i64,
-    pub(crate) name: String,
+    pub(crate) name: ZhText,
     pub(crate) summary: String,
+}
+
+pub(crate) fn match_rank_zh_text(name: &ZhText, needle: &str) -> Option<u8> {
+    match name {
+        ZhText::Translated(zh) => match_rank(zh, needle),
+        ZhText::Untranslated { ja } => match_rank(ja, needle),
+        ZhText::Missing => None,
+    }
+}
+
+pub(crate) fn format_search_output(
+    query: &str,
+    kinds: &[SearchKind],
+    mut hits: Vec<SearchHit>,
+    warnings: &[String],
+) -> ToolOutput {
+    hits.sort_by_key(|a| (a.name.is_untranslated(), a.rank, a.kind, a.id));
+    let total_matches = hits.len();
+    let truncated = total_matches > SEARCH_MAX_RESULTS;
+    hits.truncate(SEARCH_MAX_RESULTS);
+
+    let mut lines = if total_matches == 0 {
+        vec![format!("未找到包含「{query}」的简体中文数据条目。")]
+    } else if truncated {
+        vec![format!(
+            "搜索「{query}」共命中 {total_matches} 条，仅展示前 {SEARCH_MAX_RESULTS} 条："
+        )]
+    } else {
+        vec![format!("搜索「{query}」共命中 {total_matches} 条：")]
+    };
+
+    let mut results_json = Vec::with_capacity(hits.len());
+    for hit in &hits {
+        lines.push(format!(
+            "- [{}] #{}{}（{}）",
+            hit.kind.label_zh(),
+            hit.id,
+            hit.name.bracketed_or("无中文译名"),
+            hit.summary
+        ));
+        results_json.push(with_zh_fields(
+            json!({
+                "kind": hit.kind.as_str(),
+                "id": hit.id,
+                "summary": hit.summary,
+            }),
+            &[("name", &hit.name)],
+        ));
+    }
+    if !warnings.is_empty() {
+        lines.push(format!("提示：部分数据表未加载（{}）", warnings.join("；")));
+    }
+
+    let kind_names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+    let mut payload = json!({
+        "query": query,
+        "kinds": kind_names,
+        "total_matches": total_matches,
+        "truncated": truncated,
+        "results": results_json,
+    });
+    if !warnings.is_empty()
+        && let Some(obj) = payload.as_object_mut()
+    {
+        obj.insert("warnings".to_owned(), json!(warnings));
+    }
+
+    tool_ok(lines.join("\n"), payload)
 }
 
 fn handle_search_data(
@@ -1930,12 +2140,8 @@ fn handle_search_data(
         && kinds.contains(&SearchKind::Chapter)
     {
         for ch in &scenario.chapters {
-            if let Some(name) = scenario
-                .chapter_name(ch.chapter_no)
-                .text
-                .and_then(|t| collapse_ws(&t))
-                && let Some(rank) = match_rank(&name, query)
-            {
+            let name = resolve_zh_text_clean(&scenario.text_resolver, &ch.name);
+            if let Some(rank) = match_rank_zh_text(&name, query) {
                 let count = scenario.chapter_main_scenario(ch.chapter_no).len();
                 hits.push(SearchHit {
                     rank,
@@ -1951,9 +2157,8 @@ fn handle_search_data(
     if let Some(world) = &world {
         if kinds.contains(&SearchKind::Map) {
             for map in world.maps() {
-                if let Some(name) = resolve_zh_clean(world.text_resolver(), &map.name)
-                    && let Some(rank) = match_rank(&name, query)
-                {
+                let name = resolve_zh_text_clean(world.text_resolver(), &map.name);
+                if let Some(rank) = match_rank_zh_text(&name, query) {
                     hits.push(SearchHit {
                         rank,
                         kind: SearchKind::Map,
@@ -1966,9 +2171,8 @@ fn handle_search_data(
         }
         if kinds.contains(&SearchKind::Item) {
             for item in world.items() {
-                if let Some(name) = resolve_zh_clean(world.text_resolver(), &item.name)
-                    && let Some(rank) = match_rank(&name, query)
-                {
+                let name = resolve_zh_text_clean(world.text_resolver(), &item.name);
+                if let Some(rank) = match_rank_zh_text(&name, query) {
                     hits.push(SearchHit {
                         rank,
                         kind: SearchKind::Item,
@@ -1985,9 +2189,8 @@ fn handle_search_data(
         }
         if kinds.contains(&SearchKind::Quest) {
             for quest in world.quests() {
-                if let Some(name) = resolve_zh_clean(world.text_resolver(), &quest.title)
-                    && let Some(rank) = match_rank(&name, query)
-                {
+                let name = resolve_zh_text_clean(world.text_resolver(), &quest.title);
+                if let Some(rank) = match_rank_zh_text(&name, query) {
                     let ch_label = quest
                         .chapter_no
                         .map_or_else(|| "章节未定".to_owned(), |c| format!("第 {c} 章"));
@@ -2003,9 +2206,8 @@ fn handle_search_data(
         }
         if kinds.contains(&SearchKind::Shop) {
             for shop in world.shops() {
-                if let Some(name) = resolve_zh_clean(world.text_resolver(), &shop.name)
-                    && let Some(rank) = match_rank(&name, query)
-                {
+                let name = resolve_zh_text_clean(world.text_resolver(), &shop.name);
+                if let Some(rank) = match_rank_zh_text(&name, query) {
                     hits.push(SearchHit {
                         rank,
                         kind: SearchKind::Shop,
@@ -2024,12 +2226,8 @@ fn handle_search_data(
                 if !unit.category.is_enemy_category() {
                     continue;
                 }
-                if let Some(name) = battle
-                    .unit_name_in(unit.id, MODEL_LANGUAGE)
-                    .text
-                    .and_then(|t| collapse_ws(&t))
-                    && let Some(rank) = match_rank(&name, query)
-                {
+                let name = resolve_zh_text_clean(&battle.text_resolver, &unit.name);
+                if let Some(rank) = match_rank_zh_text(&name, query) {
                     let role = if unit.is_boss { "Boss" } else { "普通敌人" };
                     hits.push(SearchHit {
                         rank,
@@ -2043,12 +2241,8 @@ fn handle_search_data(
         }
         if kinds.contains(&SearchKind::Skill) {
             for skill in &battle.skills {
-                if let Some(name) = battle
-                    .skill_name_in(skill.id, MODEL_LANGUAGE)
-                    .text
-                    .and_then(|t| collapse_ws(&t))
-                    && let Some(rank) = match_rank(&name, query)
-                {
+                let name = resolve_zh_text_clean(&battle.text_resolver, &skill.name);
+                if let Some(rank) = match_rank_zh_text(&name, query) {
                     hits.push(SearchHit {
                         rank,
                         kind: SearchKind::Skill,
@@ -2066,56 +2260,7 @@ fn handle_search_data(
         }
     }
 
-    hits.sort_by_key(|a| (a.rank, a.kind, a.id));
-    let total_matches = hits.len();
-    let truncated = total_matches > SEARCH_MAX_RESULTS;
-    hits.truncate(SEARCH_MAX_RESULTS);
-
-    let mut lines = if total_matches == 0 {
-        vec![format!("未找到包含「{query}」的简体中文数据条目。")]
-    } else if truncated {
-        vec![format!(
-            "搜索「{query}」共命中 {total_matches} 条，仅展示前 {SEARCH_MAX_RESULTS} 条："
-        )]
-    } else {
-        vec![format!("搜索「{query}」共命中 {total_matches} 条：")]
-    };
-
-    let mut results_json = Vec::with_capacity(hits.len());
-    for hit in &hits {
-        lines.push(format!(
-            "- [{}] #{}「{}」（{}）",
-            hit.kind.label_zh(),
-            hit.id,
-            hit.name,
-            hit.summary
-        ));
-        results_json.push(json!({
-            "kind": hit.kind.as_str(),
-            "id": hit.id,
-            "name": hit.name,
-            "summary": hit.summary,
-        }));
-    }
-    if !warnings.is_empty() {
-        lines.push(format!("提示：部分数据表未加载（{}）", warnings.join("；")));
-    }
-
-    let kind_names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
-    let mut payload = json!({
-        "query": query,
-        "kinds": kind_names,
-        "total_matches": total_matches,
-        "truncated": truncated,
-        "results": results_json,
-    });
-    if !warnings.is_empty()
-        && let Some(obj) = payload.as_object_mut()
-    {
-        obj.insert("warnings".to_owned(), json!(warnings));
-    }
-
-    Ok(tool_ok(lines.join("\n"), payload))
+    Ok(format_search_output(query, &kinds, hits, &warnings))
 }
 
 pub(crate) fn parse_search_kinds(
@@ -2278,37 +2423,46 @@ fn format_scenario_destinations(
     let mut labels = Vec::with_capacity(entry.destinations.len());
     let mut json_list = Vec::with_capacity(entry.destinations.len());
     for dest in &entry.destinations {
-        let map_name = world.and_then(|w| {
-            w.map_by_id(dest.destination_id)
-                .and_then(|m| resolve_zh_clean(w.text_resolver(), &m.name))
-        });
-        let label = match &map_name {
-            Some(name) => format!("地图 #{}「{}」", dest.destination_id, name),
-            None => format!("地图 #{}", dest.destination_id),
-        };
-        labels.push(label);
-        json_list.push(json!({
-            "map_id": dest.destination_id,
-            "map_name": map_name,
-            "point_type": dest.point_type,
-            "destination_type": dest.destination_type,
-            "is_point_to_object": dest.is_point_to_object,
-            "object_type": dest.object_type,
-            "object_id": dest.object_id,
-            "condition": dest.condition,
-        }));
+        let map_name = world
+            .and_then(|w| {
+                w.map_by_id(dest.destination_id)
+                    .map(|m| resolve_zh_text_clean(w.text_resolver(), &m.name))
+            })
+            .unwrap_or_default();
+        labels.push(format_map_ref_zh(dest.destination_id, &map_name));
+        json_list.push(with_zh_fields(
+            json!({
+                "map_id": dest.destination_id,
+                "point_type": dest.point_type,
+                "destination_type": dest.destination_type,
+                "is_point_to_object": dest.is_point_to_object,
+                "object_type": dest.object_type,
+                "object_id": dest.object_id,
+                "condition": dest.condition,
+            }),
+            &[("map_name", &map_name)],
+        ));
     }
     (labels, json_list)
 }
 
-fn describe_treasure_box(world: &WorldData, chest: &ffr_data::world::TreasureBox) -> String {
+pub(crate) fn describe_treasure_box_parts(
+    chest: &ffr_data::world::TreasureBox,
+    item_name: &ZhText,
+) -> String {
     let mut parts = Vec::new();
     if let Some(item_id) = chest.item_id {
-        let name = world
-            .item_by_id(item_id)
-            .and_then(|item| resolve_zh_clean(world.text_resolver(), &item.name))
-            .unwrap_or_else(|| format!("道具 #{item_id}"));
-        parts.push(format!("{name}（#{item_id}）×{}", chest.item_num));
+        match item_name {
+            ZhText::Translated(zh) => parts.push(format!("{zh}（#{item_id}）×{}", chest.item_num)),
+            ZhText::Untranslated { ja } => parts.push(format!(
+                "道具 #{item_id}{}×{}",
+                ZhText::format_untranslated(ja),
+                chest.item_num
+            )),
+            ZhText::Missing => {
+                parts.push(format!("道具 #{item_id}（#{item_id}）×{}", chest.item_num))
+            }
+        }
     }
     if let Some(money) = chest.money {
         parts.push(format!("{money}G"));
@@ -2326,12 +2480,21 @@ fn describe_treasure_box(world: &WorldData, chest: &ffr_data::world::TreasureBox
     }
 }
 
-fn format_fallback_enemy_summary(
-    battle: &BattleData,
+fn describe_treasure_box(world: &WorldData, chest: &ffr_data::world::TreasureBox) -> String {
+    let item_name = chest
+        .item_id
+        .and_then(|id| world.item_by_id(id))
+        .map(|item| resolve_zh_text_clean(world.text_resolver(), &item.name))
+        .unwrap_or_default();
+    describe_treasure_box_parts(chest, &item_name)
+}
+
+pub(crate) fn format_enemy_summary_shared(
+    break_calc: &BreakCalcParams,
     profile: &EnemyProfile,
-    name: Option<&str>,
+    name: &ZhText,
+    high_risk_resolved: &[(i64, bool, ZhText)],
 ) -> String {
-    let name_display = name.unwrap_or("无中文译名");
     let boss_label = if profile.is_boss {
         "Boss"
     } else {
@@ -2359,23 +2522,458 @@ fn format_fallback_enemy_summary(
     } else {
         resist_parts.join("；")
     };
-    let mult = battle
-        .break_calc
+    let weak_break_mult = break_calc
         .break_element_multipliers
         .get(&Resistance::Weakness)
-        .copied()
-        .unwrap_or(1.0);
-    format!(
-        "{name_display}（编号 {}，Lv.{}，{boss_label}）：HP {}，破防槽（盾值）{}（弱点破防倍率 {:.1}x，破防增伤 {:.0}%）；弱点：{}；抗性：{}。",
+        .copied();
+    let display_name = name.inline_or("无中文译名");
+
+    let mut summary = format!(
+        "{display_name}（编号 {}，Lv.{}，{boss_label}）：HP {}，破防槽（盾值）{}（弱点破防倍率 {:.1}x，破防增伤 {:.0}%）；弱点：{}；抗性：{}。",
         profile.unit_id,
         profile.level,
         profile.max_hp,
         profile.max_break_point,
-        mult,
-        battle.break_calc.break_damage_magnification,
+        weak_break_mult.unwrap_or(1.0),
+        break_calc.break_damage_magnification,
         weak_text,
         resist_text,
+    );
+
+    if name.inline_opt().is_some() && weak_break_mult.is_some() && !high_risk_resolved.is_empty() {
+        let mut skill_labels = Vec::with_capacity(high_risk_resolved.len());
+        for (skill_id, exists, skill_name) in high_risk_resolved {
+            if *exists {
+                match skill_name {
+                    ZhText::Translated(text) => {
+                        skill_labels.push(format!("{text}（编号 {skill_id}）"))
+                    }
+                    ZhText::Untranslated { ja } => skill_labels.push(format!(
+                        "编号 {skill_id}{}",
+                        ZhText::format_untranslated(ja)
+                    )),
+                    ZhText::Missing => {
+                        skill_labels.push(format!("编号 {skill_id}（缺少 {MODEL_LANGUAGE} 译名）"))
+                    }
+                }
+            } else {
+                skill_labels.push(format!("编号 {skill_id}（技能表未收录）"));
+            }
+        }
+        summary.push_str(&format!(
+            "高危/斗气技能：{}（可用破防打断）。",
+            skill_labels.join("、")
+        ));
+    }
+
+    summary
+}
+
+pub(crate) fn build_map_summary_shared(
+    map: &MapInfo,
+    name: &ZhText,
+    island_name: &ZhText,
+    teleportable: bool,
+    save_point: Option<&ffr_data::world::SavePoint>,
+    box_count: usize,
+) -> String {
+    let map_type = map_type_label_shared(&map.map_type);
+    let mut parts = vec![format!(
+        "地图 #{id}{}（关卡 {level}，{map_type}）",
+        name.bracketed_or("未命名地图"),
+        id = map.id,
+        level = map.level_name
+    )];
+
+    if let Some(dungeon_sub) = dungeon_type_label_shared(&map.dungeon_type) {
+        parts.push(format!("迷宫类型：{dungeon_sub}"));
+    }
+
+    if !map.island.is_empty() && map.island != "eMapIslandType::None" {
+        let island_label = island_name
+            .inline_opt()
+            .unwrap_or_else(|| strip_enum_prefix_shared(&map.island).to_owned());
+        parts.push(format!("区域：{island_label}"));
+    }
+
+    if map.danger_level > 0 {
+        parts.push(format!("危险度：{}", map.danger_level));
+    }
+
+    if map.do_movement_encount {
+        if let Some(group_id) = map.encount_group_id {
+            parts.push(format!("移动遇敌：开启（遇敌组 #{group_id}）"));
+        } else {
+            parts.push("移动遇敌：开启".to_owned());
+        }
+    }
+
+    if !map.facilities.is_empty() {
+        let mut names = Vec::new();
+        for fac in &map.facilities {
+            let label = facility_zh(&fac.interact_type);
+            if !names.contains(&label) {
+                names.push(label);
+            }
+        }
+        parts.push(format!("设施：{}", names.join("、")));
+    }
+
+    if teleportable {
+        parts.push("世界地图可传送".to_owned());
+    }
+
+    if let Some(sp) = save_point {
+        let mut caps = Vec::new();
+        if sp.can_save {
+            caps.push("存档");
+        }
+        if sp.can_use_tent {
+            caps.push("帐篷");
+        }
+        if sp.can_teleport {
+            caps.push("迷宫内传送");
+        }
+        if !caps.is_empty() {
+            parts.push(format!("存档点支持：{}", caps.join("/")));
+        }
+    }
+
+    if box_count > 0 {
+        parts.push(format!("宝箱：{box_count} 个"));
+    }
+
+    parts.join("；")
+}
+
+pub(crate) fn build_item_summary_shared(
+    item: &Item,
+    name: &ZhText,
+    description: &ZhText,
+) -> String {
+    let category = item_category_summary_label_shared(item);
+    let price = if item.is_available_sale {
+        format!("买价 {} / 卖价 {}", item.buying_price, item.selling_price)
+    } else {
+        format!("买价 {} / 不可出售", item.buying_price)
+    };
+    let effect = build_item_effect_overview_shared(item, description);
+    format!(
+        "道具 #{id}{}（{category}）；{price}；效果：{effect}",
+        name.bracketed_or("无中文译名"),
+        id = item.id
     )
+}
+
+fn build_item_effect_overview_shared(item: &Item, description: &ZhText) -> String {
+    let mut facts = Vec::new();
+    match &item.detail {
+        ItemDetail::Consumable {
+            usable_scene,
+            is_consumed_after_use,
+            skill_id,
+            is_throwable,
+            throw_skill_id,
+        } => {
+            facts.push(format!(
+                "使用场合：{}",
+                usable_scene_label_shared(usable_scene)
+            ));
+            if !*is_consumed_after_use {
+                facts.push("使用后不消耗".to_owned());
+            }
+            if let Some(sid) = skill_id {
+                facts.push(format!("技能 #{sid}"));
+            }
+            if *is_throwable {
+                if let Some(tsid) = throw_skill_id {
+                    facts.push(format!("可投掷（技能 #{tsid}）"));
+                } else {
+                    facts.push("可投掷".to_owned());
+                }
+            }
+        }
+        ItemDetail::Seed { harvest_recipes } => {
+            facts.push(format!("培育配方 {} 种", harvest_recipes.len()));
+        }
+        ItemDetail::Equipment {
+            params,
+            passive_skill_ids,
+            ..
+        } => {
+            if !params.is_empty() {
+                let stats: Vec<String> = params
+                    .iter()
+                    .map(|p| {
+                        let sign = if p.value >= 0 { "+" } else { "" };
+                        format!(
+                            "{}{sign}{}",
+                            param_type_label_shared(&p.param_type),
+                            p.value
+                        )
+                    })
+                    .collect();
+                facts.push(format!("属性：{}", stats.join("、")));
+            }
+            if !passive_skill_ids.is_empty() {
+                let ids: Vec<String> = passive_skill_ids
+                    .iter()
+                    .map(|id| format!("#{id}"))
+                    .collect();
+                facts.push(format!("被动技能：{}", ids.join("、")));
+            }
+        }
+        ItemDetail::Vision {
+            finish_blow_skill_id,
+            attack_type,
+            roles,
+            ..
+        } => {
+            facts.push(format!(
+                "攻击类型：{}",
+                attack_type_label_shared(attack_type)
+            ));
+            if !roles.is_empty() {
+                let role_labels: Vec<String> = roles
+                    .iter()
+                    .map(|r| role_label_shared(r).to_owned())
+                    .collect();
+                facts.push(format!("职责：{}", role_labels.join("/")));
+            }
+            if let Some(sid) = finish_blow_skill_id {
+                facts.push(format!("终结技 #{sid}"));
+            }
+        }
+        ItemDetail::Valuable => {}
+        ItemDetail::Artifact {
+            item_tag,
+            effect_values,
+            is_initial_active,
+        } => {
+            if !item_tag.is_empty() && item_tag != "None" {
+                facts.push(format!("标签：{item_tag}"));
+            }
+            if !effect_values.is_empty() {
+                let vals: Vec<String> = effect_values
+                    .iter()
+                    .map(|v| format_number_shared(*v))
+                    .collect();
+                facts.push(format!("效果值：{}", vals.join("、")));
+            }
+            if *is_initial_active {
+                facts.push("初始生效".to_owned());
+            }
+        }
+    }
+
+    if let Some(desc) = description.inline_opt() {
+        facts.push(desc);
+    }
+
+    if facts.is_empty() {
+        "无效果说明".to_owned()
+    } else {
+        facts.join("；")
+    }
+}
+
+pub(crate) fn build_quest_summary_shared(
+    quest: &Quest,
+    title: &ZhText,
+    chapter_name: Option<&ZhText>,
+    requester: &ZhText,
+    requester_map_name: Option<&ZhText>,
+    goals: &[ZhText],
+    prizes: &[(Option<i64>, ZhText, i64, ZhText)],
+) -> String {
+    let chapter = match quest.chapter_no {
+        Some(ch) => {
+            let suffix = chapter_name
+                .map(ZhText::bracketed_or_empty)
+                .unwrap_or_default();
+            format!("第 {ch} 章{suffix}")
+        }
+        None => "所属章节未定（前置支线条件）".to_owned(),
+    };
+
+    let mut parts = vec![format!(
+        "任务 #{id}{}（{chapter}，地区：{region}）",
+        title.bracketed_or("无中文标题"),
+        id = quest.id,
+        region = strip_enum_prefix_shared(&quest.category)
+    )];
+
+    if let Some(req) = requester.inline_opt() {
+        if let Some(map_id) = quest.requester_map_id {
+            let map_label = requester_map_name
+                .map(|m| format_map_ref_zh(map_id, m))
+                .unwrap_or_else(|| format!("地图 #{map_id}"));
+            parts.push(format!("委托人：{req}（{map_label}）"));
+        } else {
+            parts.push(format!("委托人：{req}"));
+        }
+    }
+
+    if !quest.accept_condition.is_empty() {
+        parts.push(format!("接取条件：{}", quest.accept_condition));
+    }
+
+    let goal_strs: Vec<String> = goals
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, g)| g.inline_opt().map(|text| format!("{}. {text}", idx + 1)))
+        .collect();
+    if !goal_strs.is_empty() {
+        parts.push(format!("目标：{}", goal_strs.join(" -> ")));
+    }
+
+    let mut prize_strs = Vec::new();
+    for (item_id, item_name, count, text) in prizes {
+        if let Some(iid) = item_id {
+            let item_label = match item_name {
+                ZhText::Translated(zh) => zh.clone(),
+                ZhText::Untranslated { ja } => {
+                    format!("道具 #{iid}{}", ZhText::format_untranslated(ja))
+                }
+                ZhText::Missing => format!("道具 #{iid}"),
+            };
+            prize_strs.push(format!("{item_label}×{count}"));
+        } else if let Some(t) = text.inline_opt() {
+            prize_strs.push(t);
+        }
+    }
+    if !prize_strs.is_empty() {
+        parts.push(format!("奖励：{}", prize_strs.join("、")));
+    }
+
+    parts.join("；")
+}
+
+fn item_category_summary_label_shared(item: &Item) -> String {
+    match (&item.category, &item.detail) {
+        (ItemCategory::Consumable, _) => "消耗品".to_owned(),
+        (ItemCategory::Seed, _) => "种子".to_owned(),
+        (
+            ItemCategory::Equipment,
+            ItemDetail::Equipment {
+                equipment_type,
+                detail_type,
+                ..
+            },
+        ) => {
+            let main = equipment_type_label_shared(equipment_type);
+            match equipment_detail_label_shared(detail_type) {
+                Some(sub) => format!("{main}/{sub}"),
+                None => main.to_owned(),
+            }
+        }
+        (ItemCategory::Equipment, _) => "装备".to_owned(),
+        (ItemCategory::Vision, _) => "幻兵".to_owned(),
+        (ItemCategory::Valuable, _) => "贵重品".to_owned(),
+        (ItemCategory::Artifact, _) => "圣遗物".to_owned(),
+    }
+}
+
+pub(crate) fn map_type_label_shared(raw: &str) -> &str {
+    match raw {
+        "eMapType::Field" => "世界地图",
+        "eMapType::Town" => "城镇",
+        "eMapType::Dungeon" => "迷宫",
+        "eMapType::VisionSmallShrine" => "幻兵小祠",
+        other => strip_enum_prefix_shared(other),
+    }
+}
+
+fn dungeon_type_label_shared(raw: &str) -> Option<&'static str> {
+    match raw {
+        "eMapDungeonType::Castle" => Some("城堡"),
+        "eMapDungeonType::Cave" => Some("洞窟"),
+        _ => None,
+    }
+}
+
+fn usable_scene_label_shared(raw: &str) -> &str {
+    match raw {
+        "eItemUsableScene::Any" => "战斗/地图通用",
+        "eItemUsableScene::BattleOnly" => "仅战斗",
+        "eItemUsableScene::MapOnly" => "仅地图",
+        other => strip_enum_prefix_shared(other),
+    }
+}
+
+fn equipment_type_label_shared(raw: &str) -> &str {
+    match raw {
+        "eEquipmentType::Weapon" => "武器",
+        "eEquipmentType::Armor" => "防具",
+        "eEquipmentType::Accessory" => "饰品",
+        other => strip_enum_prefix_shared(other),
+    }
+}
+
+fn equipment_detail_label_shared(raw: &str) -> Option<&'static str> {
+    match raw {
+        "eEquipmentDetailType::GreatSowrd" | "eEquipmentDetailType::GreatSword" => Some("大剑"),
+        "eEquipmentDetailType::Katana" => Some("太刀"),
+        "eEquipmentDetailType::Bow" => Some("弓"),
+        "eEquipmentDetailType::Hammer" => Some("锤"),
+        "eEquipmentDetailType::Grimoire" => Some("魔导书"),
+        "eEquipmentDetailType::Whip" => Some("鞭"),
+        "eEquipmentDetailType::Gun" => Some("枪"),
+        "eEquipmentDetailType::Rod" => Some("法杖"),
+        "eEquipmentDetailType::LightArmor" => Some("轻甲"),
+        "eEquipmentDetailType::HeavyArmor" => Some("重甲"),
+        "eEquipmentDetailType::Robe" => Some("长袍"),
+        _ => None,
+    }
+}
+
+fn param_type_label_shared(raw: &str) -> &str {
+    match raw {
+        "eUnitParameterType::PhysicalAttack" => "物攻",
+        "eUnitParameterType::MagicalAttack" => "魔攻",
+        "eUnitParameterType::PhysicalDefense" => "物防",
+        "eUnitParameterType::MagicalDefense" => "魔防",
+        "eUnitParameterType::Defence" => "防御",
+        "eUnitParameterType::Divine" => "精神",
+        "eUnitParameterType::Agility" => "敏捷",
+        "eUnitParameterType::HitPoint" => "HP",
+        "eUnitParameterType::MagicPoint" => "MP",
+        other => strip_enum_prefix_shared(other),
+    }
+}
+
+fn attack_type_label_shared(raw: &str) -> &str {
+    match raw {
+        "eSkillDamageType::Physic" => "物理",
+        "eSkillDamageType::Magic" => "魔法",
+        "eSkillDamageType::None" => "无",
+        other => strip_enum_prefix_shared(other),
+    }
+}
+
+fn role_label_shared(raw: &str) -> &str {
+    match raw {
+        "eUnitRole::Attacker" => "攻击手",
+        "eUnitRole::Breaker" => "破防手",
+        "eUnitRole::Defender" | "eUnitRole::Tank" => "防御手",
+        "eUnitRole::Enhancer" => "强化手",
+        "eUnitRole::Healer" => "治疗手",
+        "eUnitRole::Supporter" | "eUnitRole::Buffer" => "支援手",
+        "eUnitRole::Jammer" | "eUnitRole::Debuffer" => "妨碍手",
+        other => strip_enum_prefix_shared(other),
+    }
+}
+
+fn strip_enum_prefix_shared(raw: &str) -> &str {
+    raw.rsplit_once("::").map_or(raw, |(_, suffix)| suffix)
+}
+
+fn format_number_shared(value: f64) -> String {
+    if (value - value.round()).abs() <= f64::EPSILON {
+        format!("{}", value.round() as i64)
+    } else {
+        format!("{value:.2}")
+    }
 }
 
 fn fuzzy_enemy_hints(battle: &BattleData, query: &str, limit: usize) -> Vec<String> {

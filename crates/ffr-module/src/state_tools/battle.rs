@@ -7,9 +7,10 @@ use serde_json::{Map, Value, json};
 
 use crate::data_tools::element_zh;
 use crate::state_tools::{
-    LookupCtx, SectionOutput, element_label_zh, extract_i64_list, format_item_label, obj_array,
-    obj_bool, obj_i64, obj_object, obj_str, parse_element_code, resistance_label_zh,
+    LookupCtx, SectionOutput, element_label_zh, extract_i64_list, obj_array, obj_bool, obj_i64,
+    obj_object, obj_str, parse_element_code, resistance_label_zh,
 };
+use crate::text_format::{ZhText, format_item_ref_zh, with_zh_fields};
 
 /// Render the `battle` section from `data.battle`.
 ///
@@ -121,7 +122,9 @@ pub(crate) fn render_battle(
             let table_max_bp = profile.as_ref().map(|p| p.max_break_point);
             let effective_max_bp = runtime_max_bp.or(table_max_bp);
             let scheduled_skill_id = obj_i64(u, "scheduled_skill_id").filter(|&id| id > 0);
-            let scheduled_skill_name = scheduled_skill_id.and_then(|id| lookup.skill_name(id));
+            let scheduled_skill_name = scheduled_skill_id
+                .map(|id| lookup.skill_name_zh(id))
+                .unwrap_or_default();
 
             let affinity = build_enemy_affinity(
                 unit_id,
@@ -163,49 +166,56 @@ pub(crate) fn render_battle(
                 affinity.summary
             );
             if is_risky {
-                let skill_desc = match (scheduled_skill_id, scheduled_skill_name.as_deref()) {
-                    (Some(sid), Some(sname)) => format!("「{sname}」（#{sid}）"),
-                    (Some(sid), None) => format!("技能 #{sid}"),
+                let skill_desc = match (scheduled_skill_id, &scheduled_skill_name) {
+                    (Some(sid), ZhText::Translated(sname)) => format!("「{sname}」（#{sid}）"),
+                    (Some(sid), ZhText::Untranslated { ja }) => {
+                        format!("技能 #{sid}{}", ZhText::format_untranslated(ja))
+                    }
+                    (Some(sid), ZhText::Missing) => format!("技能 #{sid}"),
                     (None, _) => "危险招式".to_owned(),
                 };
                 line.push_str(&format!("；蓄力预告：{skill_desc}"));
                 risk_lines.push(format!(
                     "[uid={uid_str}] {name_display} 蓄力 {skill_desc}（剩余破防槽 {bp_str}）"
                 ));
-                risk_warnings_json.push(json!({
-                    "uid": uid,
-                    "unit_id": unit_id,
-                    "name": resolved_name,
-                    "is_break": is_break,
-                    "bp": bp,
-                    "max_bp": effective_max_bp,
-                    "scheduled_skill_id": scheduled_skill_id,
-                    "scheduled_skill_name": scheduled_skill_name,
-                }));
+                risk_warnings_json.push(with_zh_fields(
+                    json!({
+                        "uid": uid,
+                        "unit_id": unit_id,
+                        "name": resolved_name,
+                        "is_break": is_break,
+                        "bp": bp,
+                        "max_bp": effective_max_bp,
+                        "scheduled_skill_id": scheduled_skill_id,
+                    }),
+                    &[("scheduled_skill_name", &scheduled_skill_name)],
+                ));
             }
             enemy_lines.push(line);
 
-            enemies_json.push(json!({
-                "uid": uid,
-                "unit_id": unit_id,
-                "name": resolved_name,
-                "runtime_name": runtime_name,
-                "is_boss": is_boss,
-                "is_dead": is_dead,
-                "hp": hp,
-                "max_hp": max_hp,
-                "bp": bp,
-                "max_bp": effective_max_bp,
-                "table_max_bp": table_max_bp,
-                "is_break": is_break,
-                "is_risky": is_risky,
-                "scheduled_skill_id": scheduled_skill_id,
-                "scheduled_skill_name": scheduled_skill_name,
-                "in_action": in_action,
-                "target_state": target_state,
-                "weaknesses": affinity.weaknesses_json,
-                "resistances": affinity.resistances_json,
-            }));
+            enemies_json.push(with_zh_fields(
+                json!({
+                    "uid": uid,
+                    "unit_id": unit_id,
+                    "name": resolved_name,
+                    "runtime_name": runtime_name,
+                    "is_boss": is_boss,
+                    "is_dead": is_dead,
+                    "hp": hp,
+                    "max_hp": max_hp,
+                    "bp": bp,
+                    "max_bp": effective_max_bp,
+                    "table_max_bp": table_max_bp,
+                    "is_break": is_break,
+                    "is_risky": is_risky,
+                    "scheduled_skill_id": scheduled_skill_id,
+                    "in_action": in_action,
+                    "target_state": target_state,
+                    "weaknesses": affinity.weaknesses_json,
+                    "resistances": affinity.resistances_json,
+                }),
+                &[("scheduled_skill_name", &scheduled_skill_name)],
+            ));
         } else {
             // Friendly unit (relation == 1 or unspecified).
             let mut tags = Vec::new();
@@ -411,8 +421,12 @@ pub(crate) fn summarize_battle_headline(battle: &Map<String, Value>, lookup: &Lo
             && let Some(target) = obj_object(cmd, "target")
         {
             let skill_label = obj_i64(target, "skill_id")
-                .map(|id| lookup.resolve_battle_action(id, prefer_item).label())
-                .unwrap_or_else(|| "未知招式".to_owned());
+                .map(|id| {
+                    lookup
+                        .resolve_battle_action(id, prefer_item)
+                        .bracketed_label()
+                })
+                .unwrap_or_else(|| "「未知招式」".to_owned());
             let focus_uid = obj_i64(target, "focus_uid").filter(|&u| u >= 0);
             let focus_label = focus_uid
                 .and_then(|uid| unit_labels.get(&uid))
@@ -424,15 +438,19 @@ pub(crate) fn summarize_battle_headline(battle: &Map<String, Value>, lookup: &Lo
                 ""
             };
             return format!(
-                "战斗中，{phase_prefix}轮到{actor}选目标（招式「{skill_label}」，光标在 {focus_label}{aoe_note}{break_suffix}）"
+                "战斗中，{phase_prefix}轮到{actor}选目标（招式{skill_label}，光标在 {focus_label}{aoe_note}{break_suffix}）"
             );
         }
 
         let focus_label = obj_i64(cmd, "focus_action_id")
-            .map(|id| lookup.resolve_battle_action(id, prefer_item).label())
-            .unwrap_or_else(|| "未知项".to_owned());
+            .map(|id| {
+                lookup
+                    .resolve_battle_action(id, prefer_item)
+                    .bracketed_label()
+            })
+            .unwrap_or_else(|| "「未知项」".to_owned());
         return format!(
-            "战斗中，{phase_prefix}轮到{actor}选指令（光标在「{focus_label}」{break_suffix}）"
+            "战斗中，{phase_prefix}轮到{actor}选指令（光标在{focus_label}{break_suffix}）"
         );
     }
 
@@ -800,6 +818,10 @@ fn format_cmd(
     let target_json = target_obj.map(|t| {
         let skill_id = obj_i64(t, "skill_id").filter(|&id| id >= 0);
         let skill_resolved = skill_id.map(|id| lookup.resolve_battle_action(id, prefer_item));
+        let skill_name = skill_resolved
+            .as_ref()
+            .map(|r| r.name.clone())
+            .unwrap_or_default();
         let focus_uid = obj_i64(t, "focus_uid").filter(|&uid| uid >= 0);
         let focus_name = focus_uid.and_then(|uid| units.get(&uid).map(|i| i.display_name.as_str()));
         let target_uids = extract_i64_list(t.get("target_uids"));
@@ -812,18 +834,20 @@ fn format_cmd(
             .iter()
             .map(|&uid| unit_ref_json(uid, units))
             .collect();
-        json!({
-            "skill_id": skill_id,
-            "skill_name": skill_resolved.as_ref().and_then(|r| r.name.as_deref()),
-            "focus_uid": focus_uid,
-            "focus_name": focus_name,
-            "target_uids": target_uids,
-            "targets": targets,
-            "all_target_uids": all_target_uids,
-            "all_targets": all_targets,
-            "can_aoe": obj_bool(t, "can_aoe"),
-            "is_all": obj_bool(t, "is_all"),
-        })
+        with_zh_fields(
+            json!({
+                "skill_id": skill_id,
+                "focus_uid": focus_uid,
+                "focus_name": focus_name,
+                "target_uids": target_uids,
+                "targets": targets,
+                "all_target_uids": all_target_uids,
+                "all_targets": all_targets,
+                "can_aoe": obj_bool(t, "can_aoe"),
+                "is_all": obj_bool(t, "is_all"),
+            }),
+            &[("skill_name", &skill_name)],
+        )
     });
 
     let summary = if !display {
@@ -833,6 +857,13 @@ fn format_cmd(
     {
         let skill_label = match (t["skill_id"].as_i64(), t["skill_name"].as_str()) {
             (Some(id), Some(name)) => format!("「{name}」（#{id}）"),
+            (Some(id), None)
+                if t["skill_name_untranslated"] == Value::Bool(true)
+                    && t["skill_name_ja"].is_string() =>
+            {
+                let ja = t["skill_name_ja"].as_str().unwrap_or_default();
+                format!("#{id}{}", ZhText::format_untranslated(ja))
+            }
             (Some(id), None) => format!("#{id}"),
             _ => "未知招式".to_owned(),
         };
@@ -880,18 +911,24 @@ fn format_cmd(
         parts.join("；")
     };
 
-    let json_val = json!({
-        "display": display,
-        "type": cmd_type,
-        "state": cmd_state,
-        "ancestors": ancestors_json,
-        "focus_index": focus_index,
-        "focus_action_id": focus_action_id,
-        "focus_action_name": focus_action.as_ref().and_then(|r| r.name.as_deref()),
-        "primary_actions": primary_actions,
-        "secondary_actions": secondary_actions,
-        "target": target_json,
-    });
+    let focus_action_name = focus_action
+        .as_ref()
+        .map(|r| r.name.clone())
+        .unwrap_or_default();
+    let json_val = with_zh_fields(
+        json!({
+            "display": display,
+            "type": cmd_type,
+            "state": cmd_state,
+            "ancestors": ancestors_json,
+            "focus_index": focus_index,
+            "focus_action_id": focus_action_id,
+            "primary_actions": primary_actions,
+            "secondary_actions": secondary_actions,
+            "target": target_json,
+        }),
+        &[("focus_action_name", &focus_action_name)],
+    );
     (summary, json_val)
 }
 
@@ -928,16 +965,15 @@ fn format_result(res: &Map<String, Value>, lookup: &LookupCtx) -> (String, Value
             continue;
         };
         let num = obj_i64(item, "num").unwrap_or(1);
-        let name = lookup.item_name(item_id);
-        item_labels.push(format!(
-            "{}×{num}",
-            format_item_label(item_id, name.as_deref())
+        let name = lookup.item_name_zh(item_id);
+        item_labels.push(format!("{}×{num}", format_item_ref_zh(item_id, &name)));
+        items_json.push(with_zh_fields(
+            json!({
+                "item_id": item_id,
+                "num": num,
+            }),
+            &[("name", &name)],
         ));
-        items_json.push(json!({
-            "item_id": item_id,
-            "name": name,
-            "num": num,
-        }));
     }
 
     let mut parts = vec![page_name.to_owned()];

@@ -3,10 +3,12 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use agp_game::{Content, GameModule, ResourceRange};
+use agp_core::RunId;
+use agp_game::{CallContext, Content, GameModule, ResourceRange};
 use common::{
-    FakeMod, TestDir, build_merged_fixture_export, call_data_err, call_data_ok, call_json,
-    fixture_battle_export, fixture_data_export, fixture_world_export, module, module_with_data,
+    FakeMod, TestDir, build_fixture_db_from_export, build_merged_fixture_export, call_data_err,
+    call_data_ok, call_json, fixture_battle_export, fixture_data_export, fixture_world_export,
+    module, module_with_data, module_with_db,
 };
 use serde_json::{Value, json};
 
@@ -601,4 +603,360 @@ fn inject_duplicate_and_bulk_items(export_root: &Path) {
         serde_json::to_vec_pretty(&loc).expect("serialize zh-Hans loc"),
     )
     .expect("write zh-Hans loc");
+}
+
+#[tokio::test]
+async fn untranslated_item_and_skill_format_text_and_json_consistently_across_json_and_db() {
+    let temp = TestDir::new();
+    let bridge = temp.path().join("bridge");
+    let export = temp.path().join("export");
+    let db_path = temp.path().join("untranslated.sqlite");
+    build_merged_fixture_export(&export);
+    inject_untranslated_item_and_skill(&export);
+    build_fixture_db_from_export(&export, &db_path);
+
+    let json_mod = module_with_data(&bridge, &export);
+    let db_mod = module_with_db(&bridge, &db_path);
+
+    let ja_item_name = "テスト未訳ポーション";
+    let ja_item_desc = "テスト用の未翻訳アイテム説明";
+    let ja_partial_desc = "説明だけ未翻訳のテスト";
+    let ja_skill_name = "テスト未訳ジャンプ";
+    let ja_skill_desc = "テスト用の未翻訳スキル説明";
+
+    for (label, m) in [("json", &json_mod), ("db", &db_mod)] {
+        // 1. Untranslated item (both name & description are Japanese in zh-Hans.json).
+        let (item_text, item_json) =
+            call_data_ok(m, "read_item", json!({ "item_id": 51001 })).await;
+        assert!(
+            item_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_item_name}）")),
+            "[{label}] read_item name phrasing: {item_text}"
+        );
+        assert!(
+            item_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_item_desc}）")),
+            "[{label}] read_item description phrasing: {item_text}"
+        );
+        assert!(
+            !item_text.contains(&format!("「{ja_item_name}」")),
+            "[{label}] must not pass Japanese off as Chinese: {item_text}"
+        );
+        assert!(
+            !item_text.contains("无中文译名"),
+            "[{label}] official untranslated must not say 无中文译名: {item_text}"
+        );
+        assert_eq!(item_json["item_id"], 51001);
+        assert_eq!(item_json["name"], Value::Null);
+        assert_eq!(item_json["name_untranslated"], true);
+        assert_eq!(item_json["name_ja"], ja_item_name);
+        assert_eq!(item_json["description"], Value::Null);
+        assert_eq!(item_json["description_untranslated"], true);
+        assert_eq!(item_json["description_ja"], ja_item_desc);
+
+        // 2. Partially untranslated item (Chinese name + untranslated description).
+        let (part_text, part_json) =
+            call_data_ok(m, "read_item", json!({ "item_id": 51002 })).await;
+        assert!(
+            part_text.contains("「半译试作药」"),
+            "[{label}] {part_text}"
+        );
+        assert!(
+            part_text.contains(&format!(
+                "（游戏中文版未翻译，日文原文：{ja_partial_desc}）"
+            )),
+            "[{label}] {part_text}"
+        );
+        assert_eq!(part_json["name"], "半译试作药");
+        assert!(part_json.get("name_untranslated").is_none());
+        assert_eq!(part_json["description"], Value::Null);
+        assert_eq!(part_json["description_untranslated"], true);
+        assert_eq!(part_json["description_ja"], ja_partial_desc);
+
+        // 3. Untranslated skill (both name & description are Japanese in zh-Hans.json).
+        let (skill_text, skill_json) =
+            call_data_ok(m, "read_skill", json!({ "skill_id": 95099 })).await;
+        assert!(
+            skill_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_skill_name}）")),
+            "[{label}] read_skill name phrasing: {skill_text}"
+        );
+        assert!(
+            skill_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_skill_desc}）")),
+            "[{label}] read_skill description phrasing: {skill_text}"
+        );
+        assert!(
+            !skill_text.contains(&format!("「{ja_skill_name}」")),
+            "[{label}] must not pass Japanese off as Chinese: {skill_text}"
+        );
+        assert!(
+            !skill_text.contains("无中文译名"),
+            "[{label}] official untranslated must not say 无中文译名: {skill_text}"
+        );
+        assert_eq!(skill_json["skill_id"], 95099);
+        assert_eq!(skill_json["name"], Value::Null);
+        assert_eq!(skill_json["name_untranslated"], true);
+        assert_eq!(skill_json["name_ja"], ja_skill_name);
+        assert_eq!(skill_json["description"], Value::Null);
+        assert_eq!(skill_json["description_untranslated"], true);
+        assert_eq!(skill_json["description_ja"], ja_skill_desc);
+
+        // 4. `search_data` locates untranslated item & skill by Japanese text and marks them honestly.
+        let (search_text, search_json) = call_data_ok(
+            m,
+            "search_data",
+            json!({ "query": "テスト未訳", "kinds": ["item", "skill"] }),
+        )
+        .await;
+        assert!(
+            search_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_item_name}）")),
+            "[{label}] {search_text}"
+        );
+        assert!(
+            search_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_skill_name}）")),
+            "[{label}] {search_text}"
+        );
+        let hits = search_json["results"].as_array().expect("results array");
+        assert_eq!(hits.len(), 2, "[{label}] {search_json}");
+        let item_hit = hits
+            .iter()
+            .find(|h| h["kind"] == "item" && h["id"] == 51001)
+            .expect("untranslated item hit");
+        assert_eq!(item_hit["name"], Value::Null);
+        assert_eq!(item_hit["name_untranslated"], true);
+        assert_eq!(item_hit["name_ja"], ja_item_name);
+        let skill_hit = hits
+            .iter()
+            .find(|h| h["kind"] == "skill" && h["id"] == 95099)
+            .expect("untranslated skill hit");
+        assert_eq!(skill_hit["name"], Value::Null);
+        assert_eq!(skill_hit["name_untranslated"], true);
+        assert_eq!(skill_hit["name_ja"], ja_skill_name);
+
+        // 5. `read_shop` (by shop_id and by item_id) marks untranslated stock item honestly.
+        let (shop_text, shop_json) = call_data_ok(m, "read_shop", json!({ "shop_id": 1 })).await;
+        assert!(
+            shop_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_item_name}）")),
+            "[{label}] {shop_text}"
+        );
+        let shop_item = shop_json["items"]
+            .as_array()
+            .expect("shop items")
+            .iter()
+            .find(|it| it["item_id"] == 51001)
+            .expect("untranslated item in shop 1");
+        assert_eq!(shop_item["item_name"], Value::Null);
+        assert_eq!(shop_item["item_name_untranslated"], true);
+        assert_eq!(shop_item["item_name_ja"], ja_item_name);
+
+        let (rev_text, rev_json) = call_data_ok(m, "read_shop", json!({ "item_id": 51001 })).await;
+        assert!(
+            rev_text.contains(&format!("（游戏中文版未翻译，日文原文：{ja_item_name}）")),
+            "[{label}] {rev_text}"
+        );
+        assert_eq!(rev_json["item_name"], Value::Null);
+        assert_eq!(rev_json["item_name_untranslated"], true);
+        assert_eq!(rev_json["item_name_ja"], ja_item_name);
+
+        // 6. `ffr://skills` catalog exposes untranslated fields consistently.
+        let skills_catalog = read_all_pages(m, "ffr://skills", 256).await;
+        let skill_entry = skills_catalog["skills"]
+            .as_array()
+            .expect("skills array")
+            .iter()
+            .find(|s| s["skill_id"] == 95099)
+            .expect("untranslated skill in ffr://skills");
+        assert_eq!(skill_entry["name"], Value::Null);
+        assert_eq!(skill_entry["name_untranslated"], true);
+        assert_eq!(skill_entry["name_ja"], ja_skill_name);
+    }
+
+    // Verify DB and JSON backends match byte-for-byte on all untranslated queries.
+    for (tool, args) in [
+        ("read_item", json!({ "item_id": 51001 })),
+        ("read_item", json!({ "item_id": 51002 })),
+        ("read_skill", json!({ "skill_id": 95099 })),
+        ("read_shop", json!({ "shop_id": 1 })),
+        ("read_shop", json!({ "item_id": 51001 })),
+        (
+            "search_data",
+            json!({ "query": "テスト未訳", "kinds": ["item", "skill"] }),
+        ),
+    ] {
+        let db_out = db_mod
+            .call_tool(tool, args.clone(), &CallContext::new(RunId::new()))
+            .await
+            .expect("db call");
+        let json_out = json_mod
+            .call_tool(tool, args.clone(), &CallContext::new(RunId::new()))
+            .await
+            .expect("json call");
+        assert_eq!(
+            (db_out.is_error, &db_out.content),
+            (json_out.is_error, &json_out.content),
+            "DB vs JSON untranslated mismatch for {tool} {args}"
+        );
+    }
+}
+
+fn inject_untranslated_item_and_skill(export_root: &Path) {
+    // Add identical Japanese kana strings to both `ja.json` and `zh-Hans.json` to trigger
+    // official untranslated detection.
+    for (lang, entries) in [
+        (
+            "ja",
+            vec![
+                ("UntransItemName", "テスト未訳ポーション"),
+                ("UntransItemDesc", "テスト用の未翻訳アイテム説明"),
+                ("PartialItemName", "半訳試作薬"),
+                ("PartialItemDesc", "説明だけ未翻訳のテスト"),
+                ("UntransSkillName", "テスト未訳ジャンプ"),
+                ("UntransSkillDesc", "テスト用の未翻訳スキル説明"),
+            ],
+        ),
+        (
+            "zh-Hans",
+            vec![
+                ("UntransItemName", "テスト未訳ポーション"),
+                ("UntransItemDesc", "テスト用の未翻訳アイテム説明"),
+                ("PartialItemName", "半译试作药"),
+                ("PartialItemDesc", "説明だけ未翻訳のテスト"),
+                ("UntransSkillName", "テスト未訳ジャンプ"),
+                ("UntransSkillDesc", "テスト用の未翻訳スキル説明"),
+            ],
+        ),
+    ] {
+        let loc_path = export_root.join(format!("Localization/{lang}.json"));
+        let mut loc: Value =
+            serde_json::from_str(&fs::read_to_string(&loc_path).expect("read loc"))
+                .expect("parse loc");
+        let ns = loc
+            .as_object_mut()
+            .expect("loc object")
+            .entry("UntransTest")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .expect("UntransTest ns");
+        for (k, v) in entries {
+            ns.insert(k.to_owned(), json!(v));
+        }
+        fs::write(
+            &loc_path,
+            serde_json::to_vec_pretty(&loc).expect("encode loc"),
+        )
+        .expect("write loc");
+    }
+
+    // Add untranslated consumable items 51001 & 51002.
+    {
+        let table_path =
+            export_root.join("FFRS/Content/Datatable/Item/DT_ConsumablesItemData.json");
+        let mut doc: Value =
+            serde_json::from_str(&fs::read_to_string(&table_path).expect("read consumables"))
+                .expect("parse consumables");
+        let rows = doc[0]["Rows"].as_object_mut().expect("Rows");
+        rows.insert(
+            "UntransPotion".to_owned(),
+            json!({
+                "ID": 51001,
+                "SortId": 51001,
+                "ItemType": "eItemType::Consumables",
+                "Name": { "Namespace": "UntransTest", "Key": "UntransItemName" },
+                "Description": { "Namespace": "UntransTest", "Key": "UntransItemDesc" },
+                "buyingPrice": 120,
+                "sellingPrice": 60,
+                "isAvailableSale": true,
+                "usableScene": "eItemUsableScene::Any",
+                "isConsumedAfterUse": true,
+                "SkillId": -1,
+                "throwSkillData": { "isThrow": false, "SkillId": -1 }
+            }),
+        );
+        rows.insert(
+            "PartialPotion".to_owned(),
+            json!({
+                "ID": 51002,
+                "SortId": 51002,
+                "ItemType": "eItemType::Consumables",
+                "Name": { "Namespace": "UntransTest", "Key": "PartialItemName" },
+                "Description": { "Namespace": "UntransTest", "Key": "PartialItemDesc" },
+                "buyingPrice": 80,
+                "sellingPrice": 40,
+                "isAvailableSale": true,
+                "usableScene": "eItemUsableScene::Any",
+                "isConsumedAfterUse": true,
+                "SkillId": -1,
+                "throwSkillData": { "isThrow": false, "SkillId": -1 }
+            }),
+        );
+        fs::write(
+            &table_path,
+            serde_json::to_vec_pretty(&doc).expect("encode consumables"),
+        )
+        .expect("write consumables");
+    }
+
+    // Stock item 51001 in shop 1.
+    {
+        let shop_path = export_root.join("FFRS/Content/Datatable/Shop/DT_ShopList.json");
+        let mut doc: Value =
+            serde_json::from_str(&fs::read_to_string(&shop_path).expect("read shop dt"))
+                .expect("parse shop dt");
+        let items = doc[0]["Rows"]["Harbor_ItemShop"]["ItemList"]
+            .as_array_mut()
+            .expect("shop 1 ItemList");
+        items.push(json!({
+            "ItemId": 51001,
+            "Condition": "",
+            "MaxOrderNum": -1,
+            "PriceRatio": 1.0
+        }));
+        fs::write(
+            &shop_path,
+            serde_json::to_vec_pretty(&doc).expect("encode shop dt"),
+        )
+        .expect("write shop dt");
+    }
+
+    // Add untranslated skill 95099.
+    {
+        let skill_path = export_root.join("FFRS/Content/Datatable/Skill/DT_SkillData.json");
+        let mut doc: Value =
+            serde_json::from_str(&fs::read_to_string(&skill_path).expect("read skill dt"))
+                .expect("parse skill dt");
+        let rows = doc[0]["Rows"].as_object_mut().expect("skill rows");
+        rows.insert(
+            "UntransJump".to_owned(),
+            json!({
+                "ID": 95099,
+                "SortId": 95099,
+                "Name": { "Namespace": "UntransTest", "Key": "UntransSkillName" },
+                "Description": { "Namespace": "UntransTest", "Key": "UntransSkillDesc" },
+                "hasUnit": "ePlayableUnit::All",
+                "belongCommandList": [1],
+                "skillAttrType": "eSkillAttributeType::Ability",
+                "skillEffectType": "eSkillEffectType::DamageAndRecovery",
+                "parameterVariationType": "eUnitParameterVariationType::Decrease",
+                "DamageType": "eSkillDamageType::Physic",
+                "damageCalcType": "eSkillDamageCalcType::Physic",
+                "parameterType": "eUnitParameterType::HitPoint",
+                "element": "eElement::Wind",
+                "TargetType": "eSkillTargetType::Single",
+                "defaultTargetRelation": "eRelation::Enemies",
+                "defaultTargetState": "eSkillTargetState::Alive",
+                "Cost": 12,
+                "magnification": 40,
+                "breakDamageValue": 20,
+                "accuracy": 100,
+                "criticalHitRate": 5,
+                "hitCount": 1,
+                "hitDamageRatioList": [1.0],
+                "equipCost": 10,
+                "availableLocation": "eAvailableLocation::BattleOnly",
+                "effectBundleList": [{ "effectId": -1 }]
+            }),
+        );
+        fs::write(
+            &skill_path,
+            serde_json::to_vec_pretty(&doc).expect("encode skill dt"),
+        )
+        .expect("write skill dt");
+    }
 }

@@ -14,6 +14,7 @@ mod data_tools_ffr3;
 mod input_tools;
 mod resources;
 mod state_tools;
+mod text_format;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

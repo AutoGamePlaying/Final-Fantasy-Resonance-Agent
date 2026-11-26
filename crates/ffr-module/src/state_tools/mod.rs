@@ -23,6 +23,7 @@ use serde_json::{Map, Value, json};
 use crate::data_cache::{DbAvailability, GameDataCache, GameDataSource};
 use crate::data_tools::{collapse_ws, element_zh, resolve_zh_clean};
 use crate::data_tools_db::{format_db_main_quest_title, resolve_db_zh_clean, resolve_db_zh_raw};
+use crate::text_format::{ZhText, resolve_db_zh_text_clean, resolve_zh_text_clean, with_zh_fields};
 
 /// Name of the live game-state tool.
 pub const READ_GAME_STATE_TOOL: &str = "read_game_state";
@@ -81,31 +82,45 @@ pub(crate) struct ActiveMainScenario {
 /// Resolved battle command, skill, or item entry.
 pub(crate) struct ResolvedAction {
     pub id: i64,
-    pub name: Option<String>,
+    pub name: ZhText,
     pub kind: &'static str,
 }
 
 impl ResolvedAction {
     pub(crate) fn label(&self) -> String {
         match &self.name {
-            Some(name) => name.clone(),
-            None => format!("#{}", self.id),
+            ZhText::Translated(name) => name.clone(),
+            ZhText::Untranslated { ja } => ZhText::format_untranslated(ja),
+            ZhText::Missing => format!("#{}", self.id),
+        }
+    }
+
+    pub(crate) fn bracketed_label(&self) -> String {
+        match &self.name {
+            ZhText::Translated(name) => format!("「{name}」"),
+            ZhText::Untranslated { ja } => ZhText::format_untranslated(ja),
+            ZhText::Missing => format!("「#{}」", self.id),
         }
     }
 
     pub(crate) fn display_with_id(&self) -> String {
         match &self.name {
-            Some(name) => format!("{name}（#{}）", self.id),
-            None => format!("#{}", self.id),
+            ZhText::Translated(name) => format!("{name}（#{}）", self.id),
+            ZhText::Untranslated { ja } => {
+                format!("#{}{}", self.id, ZhText::format_untranslated(ja))
+            }
+            ZhText::Missing => format!("#{}", self.id),
         }
     }
 
     pub(crate) fn to_json(&self) -> Value {
-        json!({
-            "id": self.id,
-            "name": self.name,
-            "kind": self.kind,
-        })
+        with_zh_fields(
+            json!({
+                "id": self.id,
+                "kind": self.kind,
+            }),
+            &[("name", &self.name)],
+        )
     }
 }
 
@@ -385,7 +400,7 @@ impl LookupCtx {
         }
     }
 
-    pub(crate) fn skill_name(&self, skill_id: i64) -> Option<String> {
+    pub(crate) fn skill_name_zh(&self, skill_id: i64) -> ZhText {
         match &self.backend {
             LookupBackend::Db {
                 db,
@@ -394,20 +409,28 @@ impl LookupCtx {
                 ..
             } => {
                 if !(*need_battle && avail.battle) {
-                    return None;
+                    return ZhText::Missing;
                 }
-                let skill = db.skill(skill_id).ok()??;
-                resolve_db_zh_clean(db, &skill.name)
+                let Some(skill) = db.skill(skill_id).ok().flatten() else {
+                    return ZhText::Missing;
+                };
+                resolve_db_zh_text_clean(db, &skill.name)
             }
             LookupBackend::Json { battle, .. } => {
-                let battle = battle.as_deref()?;
-                battle
-                    .skill_name_in(skill_id, MODEL_LANGUAGE)
-                    .text
-                    .and_then(|t| collapse_ws(&t))
+                let Some(battle) = battle.as_deref() else {
+                    return ZhText::Missing;
+                };
+                let Some(skill) = battle.skill_by_id(skill_id) else {
+                    return ZhText::Missing;
+                };
+                resolve_zh_text_clean(&battle.text_resolver, &skill.name)
             }
-            LookupBackend::Unavailable => None,
+            LookupBackend::Unavailable => ZhText::Missing,
         }
+    }
+
+    pub(crate) fn skill_name(&self, skill_id: i64) -> Option<String> {
+        self.skill_name_zh(skill_id).zh().map(str::to_owned)
     }
 
     pub(crate) fn item(&self, item_id: i64) -> Option<Item> {
@@ -428,7 +451,7 @@ impl LookupCtx {
         }
     }
 
-    pub(crate) fn item_name(&self, item_id: i64) -> Option<String> {
+    pub(crate) fn item_name_zh(&self, item_id: i64) -> ZhText {
         match &self.backend {
             LookupBackend::Db {
                 db,
@@ -437,18 +460,28 @@ impl LookupCtx {
                 ..
             } => {
                 if !(*need_world && avail.world) {
-                    return None;
+                    return ZhText::Missing;
                 }
-                let item = db.item(item_id).ok()??;
-                resolve_db_zh_clean(db, &item.name)
+                let Some(item) = db.item(item_id).ok().flatten() else {
+                    return ZhText::Missing;
+                };
+                resolve_db_zh_text_clean(db, &item.name)
             }
             LookupBackend::Json { world, .. } => {
-                let world = world.as_deref()?;
-                let item = world.item_by_id(item_id)?;
-                resolve_zh_clean(world.text_resolver(), &item.name)
+                let Some(world) = world.as_deref() else {
+                    return ZhText::Missing;
+                };
+                let Some(item) = world.item_by_id(item_id) else {
+                    return ZhText::Missing;
+                };
+                resolve_zh_text_clean(world.text_resolver(), &item.name)
             }
-            LookupBackend::Unavailable => None,
+            LookupBackend::Unavailable => ZhText::Missing,
         }
+    }
+
+    pub(crate) fn item_name(&self, item_id: i64) -> Option<String> {
+        self.item_name_zh(item_id).zh().map(str::to_owned)
     }
 
     pub(crate) fn shop_name(&self, shop_id: i64) -> Option<String> {
@@ -698,7 +731,7 @@ impl LookupCtx {
         }
     }
 
-    fn command_skill_name(&self, action_id: i64) -> Option<Option<String>> {
+    fn command_skill_name_zh(&self, action_id: i64) -> Option<ZhText> {
         match &self.backend {
             LookupBackend::Db {
                 db,
@@ -713,16 +746,12 @@ impl LookupCtx {
                 if cmd.is_placeholder() {
                     return None;
                 }
-                Some(resolve_db_zh_clean(db, &cmd.name))
+                Some(resolve_db_zh_text_clean(db, &cmd.name))
             }
             LookupBackend::Json { command_skills, .. } => {
                 let commands = command_skills.as_deref()?;
-                commands.command_by_id(action_id)?;
-                let name = commands
-                    .command_name_in(action_id, MODEL_LANGUAGE)
-                    .text
-                    .and_then(|t| collapse_ws(&t));
-                Some(name)
+                let cmd = commands.command_by_id(action_id)?;
+                Some(resolve_zh_text_clean(&commands.text_resolver, &cmd.name))
             }
             LookupBackend::Unavailable => None,
         }
@@ -734,43 +763,46 @@ impl LookupCtx {
         is_item_context: bool,
     ) -> ResolvedAction {
         if is_item_context {
-            if let Some(name) = self.item_name(action_id) {
+            let item_name = self.item_name_zh(action_id);
+            if !matches!(item_name, ZhText::Missing) {
                 return ResolvedAction {
                     id: action_id,
-                    name: Some(name),
+                    name: item_name,
                     kind: "item",
                 };
             }
-            if let Some(name) = self.skill_name(action_id) {
+            let skill_name = self.skill_name_zh(action_id);
+            if !matches!(skill_name, ZhText::Missing) {
                 return ResolvedAction {
                     id: action_id,
-                    name: Some(name),
+                    name: skill_name,
                     kind: "skill",
                 };
             }
             return ResolvedAction {
                 id: action_id,
-                name: None,
+                name: ZhText::Missing,
                 kind: "unknown",
             };
         }
-        if let Some(name) = self.command_skill_name(action_id) {
+        if let Some(name) = self.command_skill_name_zh(action_id) {
             return ResolvedAction {
                 id: action_id,
                 name,
                 kind: "command",
             };
         }
-        if let Some(name) = self.skill_name(action_id) {
+        let skill_name = self.skill_name_zh(action_id);
+        if !matches!(skill_name, ZhText::Missing) {
             return ResolvedAction {
                 id: action_id,
-                name: Some(name),
+                name: skill_name,
                 kind: "skill",
             };
         }
         ResolvedAction {
             id: action_id,
-            name: None,
+            name: ZhText::Missing,
             kind: "unknown",
         }
     }
@@ -1411,13 +1443,6 @@ pub(crate) fn format_map_label(map_id: i64, name: Option<&str>) -> String {
     match name {
         Some(name) => format!("地图 #{map_id}「{name}」"),
         None => format!("地图 #{map_id}"),
-    }
-}
-
-pub(crate) fn format_item_label(item_id: i64, name: Option<&str>) -> String {
-    match name {
-        Some(name) => format!("{name}（#{item_id}）"),
-        None => format!("道具 #{item_id}"),
     }
 }
 

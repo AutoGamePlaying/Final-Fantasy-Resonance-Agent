@@ -24,14 +24,17 @@ use serde_json::{Map, Value, json};
 
 use crate::data_cache::DbDataCache;
 use crate::data_tools::{
-    collapse_ws, facility_zh, format_item_candidates, optional_i64, optional_non_empty_str,
-    reject_unknown_keys, required_non_empty_str, tool_ok,
+    collapse_ws, facility_zh, format_item_candidates, map_type_label_shared as map_type_label,
+    optional_i64, optional_non_empty_str, reject_unknown_keys, required_non_empty_str, tool_ok,
 };
 use crate::data_tools_db::{
-    cached_item_name_clean, cached_map_name_clean, map_type_label, resolve_db_zh_clean,
-    resolve_db_zh_raw,
+    cached_item_name_zh, cached_map_name_zh, resolve_db_zh_clean, resolve_db_zh_raw,
 };
 use crate::state_tools::{interact_type_zh, obj_f64, obj_i64, obj_object, obj_str};
+use crate::text_format::{
+    ZhText, format_map_ref_zh, resolve_db_map_unit_name_zh, resolve_db_text_key_clean,
+    resolve_db_zh_text_clean, with_zh_fields,
+};
 
 /// Default search radius (in UE units) for `whats_near`.
 pub(crate) const DEFAULT_NEAR_RADIUS: f64 = 2000.0;
@@ -194,11 +197,11 @@ fn resolve_map_selector(
 fn format_map_candidate_lines(db: &GameDb, maps: &[MapInfo]) -> Vec<String> {
     maps.iter()
         .map(|m| {
-            let name = resolve_db_zh_clean(db, &m.name).unwrap_or_else(|| "未命名地图".to_owned());
+            let name = resolve_db_zh_text_clean(db, &m.name);
             format!(
-                "- map_id={}「{}」（关卡 {}，{}）",
+                "- map_id={}{}（关卡 {}，{}）",
                 m.id,
-                name,
+                name.bracketed_or("未命名地图"),
                 m.level_name,
                 map_type_label(&m.map_type)
             )
@@ -209,14 +212,16 @@ fn format_map_candidate_lines(db: &GameDb, maps: &[MapInfo]) -> Vec<String> {
 fn build_map_candidates_json(db: &GameDb, maps: &[MapInfo]) -> Vec<Value> {
     maps.iter()
         .map(|m| {
-            let name = resolve_db_zh_clean(db, &m.name);
-            json!({
-                "map_id": m.id,
-                "name": name,
-                "level_name": m.level_name,
-                "map_type": m.map_type,
-                "island": m.island,
-            })
+            let name = resolve_db_zh_text_clean(db, &m.name);
+            with_zh_fields(
+                json!({
+                    "map_id": m.id,
+                    "level_name": m.level_name,
+                    "map_type": m.map_type,
+                    "island": m.island,
+                }),
+                &[("name", &name)],
+            )
         })
         .collect()
 }
@@ -226,17 +231,25 @@ fn format_route_output_db(
     from_map: &MapInfo,
     to_map: &MapInfo,
 ) -> Result<ToolOutput, String> {
-    let from_name = resolve_db_zh_clean(db, &from_map.name);
-    let to_name = resolve_db_zh_clean(db, &to_map.name);
-    let from_label = format_map_id_label(from_map.id, from_name.as_deref());
-    let to_label = format_map_id_label(to_map.id, to_name.as_deref());
+    let from_name = resolve_db_zh_text_clean(db, &from_map.name);
+    let to_name = resolve_db_zh_text_clean(db, &to_map.name);
+    let from_label = format_map_ref_zh(from_map.id, &from_name);
+    let to_label = format_map_ref_zh(to_map.id, &to_name);
+    let from_json = with_zh_fields(
+        json!({ "map_id": from_map.id, "level_name": from_map.level_name }),
+        &[("name", &from_name)],
+    );
+    let to_json = with_zh_fields(
+        json!({ "map_id": to_map.id, "level_name": to_map.level_name }),
+        &[("name", &to_name)],
+    );
 
     if from_map.id == to_map.id {
         return Ok(tool_ok(
             format!("起点与终点相同（{from_label}），无需换图（0 步）。"),
             json!({
-                "from": { "map_id": from_map.id, "name": from_name, "level_name": from_map.level_name },
-                "to": { "map_id": to_map.id, "name": to_name, "level_name": to_map.level_name },
+                "from": from_json,
+                "to": to_json,
                 "reachable": true,
                 "hops": 0,
                 "uses_savepoint_teleport": false,
@@ -266,8 +279,8 @@ fn format_route_output_db(
         return Ok(tool_ok(
             msg,
             json!({
-                "from": { "map_id": from_map.id, "name": from_name, "level_name": from_map.level_name },
-                "to": { "map_id": to_map.id, "name": to_name, "level_name": to_map.level_name },
+                "from": from_json,
+                "to": to_json,
                 "reachable": false,
                 "hops": null,
                 "to_world_teleportable": to_teleportable,
@@ -276,7 +289,7 @@ fn format_route_output_db(
         ));
     };
 
-    let mut map_names: HashMap<i64, Option<String>> = HashMap::new();
+    let mut map_names: HashMap<i64, ZhText> = HashMap::new();
     map_names.insert(from_map.id, from_name.clone());
     map_names.insert(to_map.id, to_name.clone());
 
@@ -294,15 +307,15 @@ fn format_route_output_db(
 
     for (idx, edge) in edges.iter().enumerate() {
         let step_no = idx + 1;
-        let step_from_name = cached_map_name_clean(db, edge.from_map_id, &mut map_names)?;
+        let step_from_name = cached_map_name_zh(db, edge.from_map_id, &mut map_names)?;
         let step_to_id = edge.target_map_id;
         let step_to_name = match step_to_id {
-            Some(tid) => cached_map_name_clean(db, tid, &mut map_names)?,
-            None => None,
+            Some(tid) => cached_map_name_zh(db, tid, &mut map_names)?,
+            None => ZhText::Missing,
         };
-        let step_from_label = format_map_id_label(edge.from_map_id, step_from_name.as_deref());
+        let step_from_label = format_map_ref_zh(edge.from_map_id, &step_from_name);
         let step_to_label = match step_to_id {
-            Some(tid) => format_map_id_label(tid, step_to_name.as_deref()),
+            Some(tid) => format_map_ref_zh(tid, &step_to_name),
             None => "未知地图".to_owned(),
         };
 
@@ -338,16 +351,16 @@ fn format_route_output_db(
         steps_json.push(format_map_exit_json(
             edge,
             step_no,
-            step_from_name.as_deref(),
-            step_to_name.as_deref(),
+            &step_from_name,
+            &step_to_name,
         ));
     }
 
     Ok(tool_ok(
         lines.join("\n"),
         json!({
-            "from": { "map_id": from_map.id, "name": from_name, "level_name": from_map.level_name },
-            "to": { "map_id": to_map.id, "name": to_name, "level_name": to_map.level_name },
+            "from": from_json,
+            "to": to_json,
             "reachable": true,
             "hops": edges.len(),
             "uses_savepoint_teleport": uses_savepoint_teleport,
@@ -361,34 +374,35 @@ fn format_route_output_db(
 fn format_map_exit_json(
     edge: &MapExit,
     step_no: usize,
-    from_name: Option<&str>,
-    to_name: Option<&str>,
+    from_name: &ZhText,
+    to_name: &ZhText,
 ) -> Value {
     let dir_zh = edge
         .target_direction
         .as_deref()
         .and_then(map_direction_enum_zh);
-    json!({
-        "step": step_no,
-        "from_map_id": edge.from_map_id,
-        "from_map_name": from_name,
-        "to_map_id": edge.target_map_id,
-        "to_map_name": to_name,
-        "kind": edge.kind.as_str(),
-        "kind_zh": map_edge_kind_zh(edge.kind),
-        "is_savepoint_teleport": edge.kind == MapEdgeKind::SavePointTeleport,
-        "source_level": edge.source_level,
-        "actor_name": edge.actor_name,
-        "unique_id": edge.unique_id,
-        "exit_location": edge.location.map(vec3_json),
-        "target_point_id": edge.target_point_id,
-        "target_location": edge.target_location.map(vec3_json),
-        "target_direction": edge.target_direction,
-        "target_direction_zh": dir_zh,
-        "is_auto_transition": edge.is_auto_transition,
-        "is_event_only": edge.is_event_only,
-        "condition": edge.condition,
-    })
+    with_zh_fields(
+        json!({
+            "step": step_no,
+            "from_map_id": edge.from_map_id,
+            "to_map_id": edge.target_map_id,
+            "kind": edge.kind.as_str(),
+            "kind_zh": map_edge_kind_zh(edge.kind),
+            "is_savepoint_teleport": edge.kind == MapEdgeKind::SavePointTeleport,
+            "source_level": edge.source_level,
+            "actor_name": edge.actor_name,
+            "unique_id": edge.unique_id,
+            "exit_location": edge.location.map(vec3_json),
+            "target_point_id": edge.target_point_id,
+            "target_location": edge.target_location.map(vec3_json),
+            "target_direction": edge.target_direction,
+            "target_direction_zh": dir_zh,
+            "is_auto_transition": edge.is_auto_transition,
+            "is_event_only": edge.is_event_only,
+            "condition": edge.condition,
+        }),
+        &[("from_map_name", from_name), ("to_map_name", to_name)],
+    )
 }
 
 // ---- 2. where_to_get ----
@@ -461,11 +475,12 @@ pub(crate) fn handle_where_to_get_db(
 }
 
 fn format_where_to_get_output_db(db: &GameDb, item: &Item) -> Result<ToolOutput, String> {
-    let item_name = resolve_db_zh_clean(db, &item.name);
-    let item_display = match &item_name {
-        Some(n) => format!("道具 #{}「{n}」", item.id),
-        None => format!("道具 #{}（无中文译名）", item.id),
-    };
+    let item_name = resolve_db_zh_text_clean(db, &item.name);
+    let item_display = format!(
+        "道具 #{}{}",
+        item.id,
+        item_name.bracketed_or_paren("无中文译名")
+    );
 
     let sources = db
         .item_sources(item.id)
@@ -485,6 +500,8 @@ fn format_where_to_get_output_db(db: &GameDb, item: &Item) -> Result<ToolOutput,
     let mut quest_lines = Vec::new();
 
     let mut enemy_chapters_cache: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut map_names_cache: HashMap<i64, ZhText> = HashMap::new();
+    let mut shop_names_cache: HashMap<i64, ZhText> = HashMap::new();
     let mut used_placement_indices: HashSet<usize> = HashSet::new();
 
     for source in sources {
@@ -532,7 +549,13 @@ fn format_where_to_get_output_db(db: &GameDb, item: &Item) -> Result<ToolOutput,
                     None
                 };
 
-                let map_label = format_map_id_label(map_id, map_name_zh.as_deref());
+                let map_name = resolve_opt_map_name_zh(
+                    db,
+                    map_id,
+                    map_name_zh.as_deref(),
+                    &mut map_names_cache,
+                )?;
+                let map_label = format_map_ref_zh(map_id, &map_name);
                 let pos_part =
                     location.map_or_else(String::new, |p| format!("，坐标 {}", format_vec3_zh(p)));
                 let cond_part = visible_condition
@@ -543,17 +566,19 @@ fn format_where_to_get_output_db(db: &GameDb, item: &Item) -> Result<ToolOutput,
                     "  - {map_label} 宝箱 #{box_id}（×{count}{trap_part}{pos_part}{cond_part}）"
                 ));
 
-                chests_json.push(json!({
-                    "map_id": map_id,
-                    "map_name": map_name_zh,
-                    "box_id": box_id,
-                    "unique_id": unique_id,
-                    "count": count,
-                    "is_trap": is_trap,
-                    "battle_group_id": battle_group_id,
-                    "location": location.map(vec3_json),
-                    "visible_condition": visible_condition,
-                }));
+                chests_json.push(with_zh_fields(
+                    json!({
+                        "map_id": map_id,
+                        "box_id": box_id,
+                        "unique_id": unique_id,
+                        "count": count,
+                        "is_trap": is_trap,
+                        "battle_group_id": battle_group_id,
+                        "location": location.map(vec3_json),
+                        "visible_condition": visible_condition,
+                    }),
+                    &[("map_name", &map_name)],
+                ));
             }
             ItemSource::Shop {
                 shop_id,
@@ -571,10 +596,22 @@ fn format_where_to_get_output_db(db: &GameDb, item: &Item) -> Result<ToolOutput,
                 let mut loc_json = Vec::with_capacity(locations.len());
                 let mut loc_descs = Vec::with_capacity(locations.len());
                 for loc in &locations {
-                    let map_label = format_map_id_label(loc.map_id, loc.map_name_zh.as_deref());
+                    let loc_map_name = resolve_opt_map_name_zh(
+                        db,
+                        loc.map_id,
+                        loc.map_name_zh.as_deref(),
+                        &mut map_names_cache,
+                    )?;
+                    let loc_npc_name_zh = resolve_db_map_unit_name_zh(
+                        db,
+                        loc.npc_name_zh.as_deref(),
+                        None,
+                        loc.map_unit_id,
+                    );
+                    let map_label = format_map_ref_zh(loc.map_id, &loc_map_name);
                     let npc_label = format_npc_short_label(
                         loc.unique_id,
-                        loc.npc_name_zh.as_deref(),
+                        &loc_npc_name_zh,
                         loc.npc_name.as_deref(),
                         loc.interact_type.as_deref(),
                     );
@@ -592,25 +629,32 @@ fn format_where_to_get_output_db(db: &GameDb, item: &Item) -> Result<ToolOutput,
                     };
                     loc_descs.push(format!("{map_label} {npc_label}{extra_str}"));
 
-                    loc_json.push(json!({
-                        "map_id": loc.map_id,
-                        "map_name": loc.map_name_zh,
-                        "unique_id": loc.unique_id,
-                        "map_unit_id": loc.map_unit_id,
-                        "npc_name": loc.npc_name,
-                        "npc_name_zh": loc.npc_name_zh,
-                        "various_shop_id": loc.various_shop_id,
-                        "interact_type": loc.interact_type,
-                        "interact_type_zh": loc.interact_type.as_deref().map(facility_zh),
-                        "visible_condition": loc.visible_condition,
-                        "location": loc.location.map(vec3_json),
-                    }));
+                    loc_json.push(with_zh_fields(
+                        json!({
+                            "map_id": loc.map_id,
+                            "unique_id": loc.unique_id,
+                            "map_unit_id": loc.map_unit_id,
+                            "npc_name": loc.npc_name,
+                            "various_shop_id": loc.various_shop_id,
+                            "interact_type": loc.interact_type,
+                            "interact_type_zh": loc.interact_type.as_deref().map(facility_zh),
+                            "visible_condition": loc.visible_condition,
+                            "location": loc.location.map(vec3_json),
+                        }),
+                        &[
+                            ("map_name", &loc_map_name),
+                            ("npc_name_zh", &loc_npc_name_zh),
+                        ],
+                    ));
                 }
 
-                let shop_title = match &shop_name_zh {
-                    Some(n) => format!("商店 #{shop_id}「{n}」"),
-                    None => format!("商店 #{shop_id}"),
-                };
+                let shop_name = resolve_opt_shop_name_zh(
+                    db,
+                    shop_id,
+                    shop_name_zh.as_deref(),
+                    &mut shop_names_cache,
+                )?;
+                let shop_title = format!("商店 #{shop_id}{}", shop_name.bracketed_or_empty());
                 let cond_part = item_cond_non_empty
                     .as_deref()
                     .map_or_else(String::new, |c| format!("，上架条件：{c}"));
@@ -624,15 +668,17 @@ fn format_where_to_get_output_db(db: &GameDb, item: &Item) -> Result<ToolOutput,
                     "  - {shop_title}（{price_label}{limit_part}{cond_part}）— {where_part}"
                 ));
 
-                shops_json.push(json!({
-                    "shop_id": shop_id,
-                    "shop_name": shop_name_zh,
-                    "price": price,
-                    "price_ratio": price_ratio,
-                    "max_order_num": max_order_num,
-                    "condition": item_cond_non_empty,
-                    "locations": loc_json,
-                }));
+                shops_json.push(with_zh_fields(
+                    json!({
+                        "shop_id": shop_id,
+                        "price": price,
+                        "price_ratio": price_ratio,
+                        "max_order_num": max_order_num,
+                        "condition": item_cond_non_empty,
+                        "locations": loc_json,
+                    }),
+                    &[("shop_name", &shop_name)],
+                ));
             }
             ItemSource::EnemyDrop {
                 unit_id,
@@ -650,11 +696,15 @@ fn format_where_to_get_output_db(db: &GameDb, item: &Item) -> Result<ToolOutput,
                     chs
                 };
 
+                let unit_name = resolve_opt_unit_name_zh(db, unit_id, unit_name_zh.as_deref());
                 let kind_code = drop_kind_code(drop_kind);
                 let kind_zh = drop_kind_zh(drop_kind);
-                let enemy_label = match &unit_name_zh {
-                    Some(n) => format!("{n}（#{unit_id}）"),
-                    None => format!("单位 #{unit_id}"),
+                let enemy_label = match &unit_name {
+                    ZhText::Translated(n) => format!("{n}（#{unit_id}）"),
+                    ZhText::Untranslated { ja } => {
+                        format!("单位 #{unit_id}{}", ZhText::format_untranslated(ja))
+                    }
+                    ZhText::Missing => format!("单位 #{unit_id}"),
                 };
                 let ch_part = if chapters.is_empty() {
                     "章节未定".to_owned()
@@ -667,49 +717,52 @@ fn format_where_to_get_output_db(db: &GameDb, item: &Item) -> Result<ToolOutput,
                 };
                 drop_lines.push(format!("  - {enemy_label}：{kind_zh} {rate}%（{ch_part}）"));
 
-                enemy_drops_json.push(json!({
-                    "unit_id": unit_id,
-                    "unit_name": unit_name_zh,
-                    "kind": kind_code,
-                    "kind_zh": kind_zh,
-                    "rate": rate,
-                    "chapters": chapters,
-                }));
+                enemy_drops_json.push(with_zh_fields(
+                    json!({
+                        "unit_id": unit_id,
+                        "kind": kind_code,
+                        "kind_zh": kind_zh,
+                        "rate": rate,
+                        "chapters": chapters,
+                    }),
+                    &[("unit_name", &unit_name)],
+                ));
             }
             ItemSource::QuestPrize {
                 quest_id,
                 quest_name_zh,
                 count,
             } => {
-                let q_label = match &quest_name_zh {
-                    Some(n) => format!("支线任务 #{quest_id}「{n}」"),
-                    None => format!("支线任务 #{quest_id}"),
-                };
+                let quest_name = resolve_opt_quest_name_zh(db, quest_id, quest_name_zh.as_deref());
+                let q_label = format!("支线任务 #{quest_id}{}", quest_name.bracketed_or_empty());
                 quest_lines.push(format!("  - {q_label}（×{count}）"));
-                quest_rewards_json.push(json!({
-                    "source": "quest",
-                    "quest_id": quest_id,
-                    "quest_name": quest_name_zh,
-                    "count": count,
-                }));
+                quest_rewards_json.push(with_zh_fields(
+                    json!({
+                        "source": "quest",
+                        "quest_id": quest_id,
+                        "count": count,
+                    }),
+                    &[("quest_name", &quest_name)],
+                ));
             }
             ItemSource::QuestBoardReward {
                 quest_id,
                 quest_name_zh,
                 count,
             } => {
-                let q_label = match &quest_name_zh {
-                    Some(n) => format!("委托板任务 #{quest_id}「{n}」"),
-                    None => format!("委托板任务 #{quest_id}"),
-                };
+                let quest_name =
+                    resolve_opt_quest_board_name_zh(db, quest_id, quest_name_zh.as_deref());
+                let q_label = format!("委托板任务 #{quest_id}{}", quest_name.bracketed_or_empty());
                 let cnt_part = count.map_or_else(String::new, |c| format!("（×{c}）"));
                 quest_lines.push(format!("  - {q_label}{cnt_part}"));
-                quest_rewards_json.push(json!({
-                    "source": "quest_board",
-                    "quest_id": quest_id,
-                    "quest_name": quest_name_zh,
-                    "count": count,
-                }));
+                quest_rewards_json.push(with_zh_fields(
+                    json!({
+                        "source": "quest_board",
+                        "quest_id": quest_id,
+                        "count": count,
+                    }),
+                    &[("quest_name", &quest_name)],
+                ));
             }
         }
     }
@@ -734,22 +787,24 @@ fn format_where_to_get_output_db(db: &GameDb, item: &Item) -> Result<ToolOutput,
 
     Ok(tool_ok(
         lines.join("\n"),
-        json!({
-            "item_id": item.id,
-            "item_name": item_name,
-            "buying_price": item.buying_price,
-            "selling_price": item.selling_price,
-            "counts": {
-                "treasure_boxes": chests_json.len(),
-                "shops": shops_json.len(),
-                "enemy_drops": enemy_drops_json.len(),
-                "quest_rewards": quest_rewards_json.len(),
-            },
-            "treasure_boxes": chests_json,
-            "shops": shops_json,
-            "enemy_drops": enemy_drops_json,
-            "quest_rewards": quest_rewards_json,
-        }),
+        with_zh_fields(
+            json!({
+                "item_id": item.id,
+                "buying_price": item.buying_price,
+                "selling_price": item.selling_price,
+                "counts": {
+                    "treasure_boxes": chests_json.len(),
+                    "shops": shops_json.len(),
+                    "enemy_drops": enemy_drops_json.len(),
+                    "quest_rewards": quest_rewards_json.len(),
+                },
+                "treasure_boxes": chests_json,
+                "shops": shops_json,
+                "enemy_drops": enemy_drops_json,
+                "quest_rewards": quest_rewards_json,
+            }),
+            &[("item_name", &item_name)],
+        ),
     ))
 }
 
@@ -870,6 +925,23 @@ pub(crate) fn handle_read_npc_db(
     let mut matches = db
         .search_map_units_by_name(query)
         .map_err(|err| format!("按名称搜索 NPC 失败：{err}"))?;
+    let mut matched_ids: HashSet<i64> = matches.iter().map(|mu| mu.id).collect();
+    let untranslated_units = db
+        .untranslated_map_units(MODEL_LANGUAGE)
+        .map_err(|err| format!("搜索未翻译 NPC 失败：{err}"))?;
+    for entry in untranslated_units {
+        if entry.field != "name" || matched_ids.contains(&entry.key) {
+            continue;
+        }
+        if entry.value.contains(query)
+            && let Some(mu) = db
+                .map_unit(entry.key)
+                .map_err(|err| format!("查询地图单位 {} 失败：{err}", entry.key))?
+        {
+            matched_ids.insert(mu.id);
+            matches.push(mu);
+        }
+    }
 
     if let Some(mid) = map_id {
         let map_objs = db
@@ -895,7 +967,12 @@ pub(crate) fn handle_read_npc_db(
     let exact: Vec<MapUnit> = matches
         .iter()
         .filter(|mu| {
-            mu.name_zh.as_deref() == Some(query) || mu.name == query || mu.row_key == query
+            let resolved_zh =
+                resolve_db_map_unit_name_zh(&db, mu.name_zh.as_deref(), Some(mu), Some(mu.id));
+            resolved_zh.zh() == Some(query)
+                || resolved_zh.untranslated_ja() == Some(query)
+                || mu.name == query
+                || mu.row_key == query
         })
         .cloned()
         .collect();
@@ -908,17 +985,24 @@ pub(crate) fn handle_read_npc_db(
         )];
         let mut cands = Vec::with_capacity(resolved_list.len());
         for mu in &resolved_list {
-            let display = match &mu.name_zh {
-                Some(zh) => format!("「{zh}」（内部名：{}）", mu.name),
-                None => format!("「{}」（无中文译名）", mu.name),
+            let mu_name_zh =
+                resolve_db_map_unit_name_zh(&db, mu.name_zh.as_deref(), Some(mu), Some(mu.id));
+            let display = match &mu_name_zh {
+                ZhText::Translated(zh) => format!("「{zh}」（内部名：{}）", mu.name),
+                ZhText::Untranslated { ja } => {
+                    format!("{}（内部名：{}）", ZhText::format_untranslated(ja), mu.name)
+                }
+                ZhText::Missing => format!("「{}」（无中文译名）", mu.name),
             };
             lines.push(format!("- map_unit_id={} {display}", mu.id));
-            cands.push(json!({
-                "map_unit_id": mu.id,
-                "name_zh": mu.name_zh,
-                "name": mu.name,
-                "row_key": mu.row_key,
-            }));
+            cands.push(with_zh_fields(
+                json!({
+                    "map_unit_id": mu.id,
+                    "name": mu.name,
+                    "row_key": mu.row_key,
+                }),
+                &[("name_zh", &mu_name_zh)],
+            ));
         }
         return Ok(tool_ok(
             lines.join("\n"),
@@ -940,23 +1024,32 @@ pub(crate) fn handle_read_npc_db(
 }
 
 fn format_single_npc_output_db(db: &GameDb, npc: &NpcInfo) -> Result<ToolOutput, String> {
-    let mut item_names: HashMap<i64, Option<String>> = HashMap::new();
-    let (summary, payload) = render_npc_detail_db(db, npc, &mut item_names)?;
+    let mut item_names: HashMap<i64, ZhText> = HashMap::new();
+    let mut map_names: HashMap<i64, ZhText> = HashMap::new();
+    let (summary, payload) = render_npc_detail_db(db, npc, &mut item_names, &mut map_names)?;
     Ok(tool_ok(summary, payload))
 }
 
 fn render_npc_detail_db(
     db: &GameDb,
     npc: &NpcInfo,
-    item_names: &mut HashMap<i64, Option<String>>,
+    item_names: &mut HashMap<i64, ZhText>,
+    map_names: &mut HashMap<i64, ZhText>,
 ) -> Result<(String, Value), String> {
-    let name_display = match (&npc.name_zh, &npc.name) {
-        (Some(zh), Some(raw)) => format!("「{zh}」（内部名：{raw}）"),
-        (Some(zh), None) => format!("「{zh}」"),
-        (None, Some(raw)) => format!("「{raw}」（无中文译名）"),
-        (None, None) => "未命名 NPC".to_owned(),
+    let npc_name_zh =
+        resolve_db_map_unit_name_zh(db, npc.name_zh.as_deref(), None, npc.map_unit_id);
+    let name_display = match (&npc_name_zh, &npc.name) {
+        (ZhText::Translated(zh), Some(raw)) => format!("「{zh}」（内部名：{raw}）"),
+        (ZhText::Translated(zh), None) => format!("「{zh}」"),
+        (ZhText::Untranslated { ja }, Some(raw)) => {
+            format!("{}（内部名：{raw}）", ZhText::format_untranslated(ja))
+        }
+        (ZhText::Untranslated { ja }, None) => ZhText::format_untranslated(ja),
+        (ZhText::Missing, Some(raw)) => format!("「{raw}」（无中文译名）"),
+        (ZhText::Missing, None) => "未命名 NPC".to_owned(),
     };
-    let map_label = format_map_id_label(npc.map_id, npc.map_name_zh.as_deref());
+    let map_name = resolve_opt_map_name_zh(db, npc.map_id, npc.map_name_zh.as_deref(), map_names)?;
+    let map_label = format_map_ref_zh(npc.map_id, &map_name);
     let pos_str = npc
         .location
         .map_or_else(|| "坐标未知".to_owned(), format_vec3_zh);
@@ -1012,32 +1105,44 @@ fn render_npc_detail_db(
         let mut goods_labels = Vec::with_capacity(resolved_shop.stock.len());
         for slot in &resolved_shop.stock {
             let it_name = match &slot.item {
-                Some(it) => resolve_db_zh_clean(db, &it.name),
-                None => cached_item_name_clean(db, slot.entry.item_id, item_names)?,
+                Some(it) => resolve_db_zh_text_clean(db, &it.name),
+                None => cached_item_name_zh(db, slot.entry.item_id, item_names)?,
             };
             let price = slot.price.or_else(|| {
                 slot.item
                     .as_ref()
                     .map(|it| slot.entry.effective_price(it.buying_price))
             });
-            let display = it_name
-                .clone()
-                .unwrap_or_else(|| format!("道具 #{}", slot.entry.item_id));
+            let display = match &it_name {
+                ZhText::Translated(n) => n.clone(),
+                ZhText::Untranslated { ja } => {
+                    format!(
+                        "道具 #{}{}",
+                        slot.entry.item_id,
+                        ZhText::format_untranslated(ja)
+                    )
+                }
+                ZhText::Missing => format!("道具 #{}", slot.entry.item_id),
+            };
             let price_str = price.map_or_else(|| "价格未知".to_owned(), |p| format!("{p}G"));
             goods_labels.push(format!("{display}（#{}，{price_str}）", slot.entry.item_id));
-            stock_json.push(json!({
-                "item_id": slot.entry.item_id,
-                "item_name": it_name,
-                "price": price,
-                "max_order_num": slot.entry.max_order_num,
-                "price_ratio": slot.entry.price_ratio,
-                "condition": (!slot.entry.condition.is_empty()).then_some(&slot.entry.condition),
-            }));
+            stock_json.push(with_zh_fields(
+                json!({
+                    "item_id": slot.entry.item_id,
+                    "price": price,
+                    "max_order_num": slot.entry.max_order_num,
+                    "price_ratio": slot.entry.price_ratio,
+                    "condition": (!slot.entry.condition.is_empty()).then_some(&slot.entry.condition),
+                }),
+                &[("item_name", &it_name)],
+            ));
         }
-        let shop_label = match &resolved_shop.name_zh {
-            Some(n) => format!("商店 #{}「{n}」", resolved_shop.shop.id),
-            None => format!("商店 #{}", resolved_shop.shop.id),
-        };
+        let shop_name = resolve_db_zh_text_clean(db, &resolved_shop.shop.name);
+        let shop_label = format!(
+            "商店 #{}{}",
+            resolved_shop.shop.id,
+            shop_name.bracketed_or_empty()
+        );
         if goods_labels.is_empty() {
             lines.push(format!("- {shop_label}：无商品"));
         } else {
@@ -1047,34 +1152,37 @@ fn render_npc_detail_db(
                 goods_labels.join("、")
             ));
         }
-        shops_json.push(json!({
-            "shop_id": resolved_shop.shop.id,
-            "shop_name": resolved_shop.name_zh,
-            "items": stock_json,
-        }));
+        shops_json.push(with_zh_fields(
+            json!({
+                "shop_id": resolved_shop.shop.id,
+                "items": stock_json,
+            }),
+            &[("shop_name", &shop_name)],
+        ));
     }
 
-    let payload = json!({
-        "map_id": npc.map_id,
-        "map_name": npc.map_name_zh,
-        "unique_id": npc.unique_id,
-        "level_name": npc.level_name,
-        "actor_name": npc.actor_name,
-        "location": npc.location.map(vec3_json),
-        "direction": npc.direction,
-        "interact_type": npc.interact_type,
-        "interact_type_zh": interact_zh,
-        "visible_condition": npc.visible_condition,
-        "map_unit_id": npc.map_unit_id,
-        "name": npc.name,
-        "name_zh": npc.name_zh,
-        "talk_events": talk_events_json,
-        "various_shop_id": npc.various_shop_id,
-        "shops": shops_json,
-        "is_inn": is_inn,
-        "inn_id": npc.inn_id,
-        "inn_price": npc.inn.as_ref().map(|i| i.price),
-    });
+    let payload = with_zh_fields(
+        json!({
+            "map_id": npc.map_id,
+            "unique_id": npc.unique_id,
+            "level_name": npc.level_name,
+            "actor_name": npc.actor_name,
+            "location": npc.location.map(vec3_json),
+            "direction": npc.direction,
+            "interact_type": npc.interact_type,
+            "interact_type_zh": interact_zh,
+            "visible_condition": npc.visible_condition,
+            "map_unit_id": npc.map_unit_id,
+            "name": npc.name,
+            "talk_events": talk_events_json,
+            "various_shop_id": npc.various_shop_id,
+            "shops": shops_json,
+            "is_inn": is_inn,
+            "inn_id": npc.inn_id,
+            "inn_price": npc.inn.as_ref().map(|i| i.price),
+        }),
+        &[("map_name", &map_name), ("name_zh", &npc_name_zh)],
+    );
     Ok((lines.join("\n"), payload))
 }
 
@@ -1089,13 +1197,22 @@ fn format_map_unit_npcs_output_db(
         occurrences.retain(|o| o.map_id == Some(mid));
     }
 
-    let name_zh = map_unit.and_then(|u| u.name_zh.clone());
+    let name_zh = resolve_db_map_unit_name_zh(
+        db,
+        map_unit.and_then(|u| u.name_zh.as_deref()),
+        map_unit,
+        Some(map_unit_id),
+    );
     let name_raw = map_unit.map(|u| u.name.clone());
     let title = match (&name_zh, &name_raw) {
-        (Some(zh), Some(raw)) => format!("「{zh}」（内部名：{raw}）"),
-        (Some(zh), None) => format!("「{zh}」"),
-        (None, Some(raw)) => format!("「{raw}」（无中文译名）"),
-        (None, None) => format!("地图单位 #{map_unit_id}"),
+        (ZhText::Translated(zh), Some(raw)) => format!("「{zh}」（内部名：{raw}）"),
+        (ZhText::Translated(zh), None) => format!("「{zh}」"),
+        (ZhText::Untranslated { ja }, Some(raw)) => {
+            format!("{}（内部名：{raw}）", ZhText::format_untranslated(ja))
+        }
+        (ZhText::Untranslated { ja }, None) => ZhText::format_untranslated(ja),
+        (ZhText::Missing, Some(raw)) => format!("「{raw}」（无中文译名）"),
+        (ZhText::Missing, None) => format!("地图单位 #{map_unit_id}"),
     };
 
     // If there is exactly 1 placement with valid (map_id, unique_id), return the full rich NPC view.
@@ -1108,7 +1225,8 @@ fn format_map_unit_npcs_output_db(
         return format_single_npc_output_db(db, &npc);
     }
 
-    let mut item_names: HashMap<i64, Option<String>> = HashMap::new();
+    let mut item_names: HashMap<i64, ZhText> = HashMap::new();
+    let mut map_names: HashMap<i64, ZhText> = HashMap::new();
     let mut lines = vec![format!(
         "地图单位 #{map_unit_id} {title}：共 {} 处出现位置{}",
         occurrences.len(),
@@ -1124,8 +1242,14 @@ fn format_map_unit_npcs_output_db(
             _ => None,
         };
 
+        let occ_map_name = match occ.map_id {
+            Some(mid) => {
+                resolve_opt_map_name_zh(db, mid, occ.map_name_zh.as_deref(), &mut map_names)?
+            }
+            None => ZhText::from_parts_clean(occ.map_name_zh.as_deref(), None),
+        };
         let map_label = match occ.map_id {
-            Some(mid) => format_map_id_label(mid, occ.map_name_zh.as_deref()),
+            Some(mid) => format_map_ref_zh(mid, &occ_map_name),
             None => format!("关卡 {}", occ.level_name),
         };
         let pos_str = occ
@@ -1137,7 +1261,7 @@ fn format_map_unit_npcs_output_db(
 
         let (talk_events_json, shops_json, is_inn, inn_id, inn_price, various_shop_id) =
             if let Some(ref npc) = detailed {
-                let (_, val) = render_npc_detail_db(db, npc, &mut item_names)?;
+                let (_, val) = render_npc_detail_db(db, npc, &mut item_names, &mut map_names)?;
                 (
                     val["talk_events"].clone(),
                     val["shops"].clone(),
@@ -1195,24 +1319,26 @@ fn format_map_unit_npcs_output_db(
             ));
         }
 
-        placements_json.push(json!({
-            "map_id": occ.map_id,
-            "map_name": occ.map_name_zh,
-            "unique_id": occ.unique_id,
-            "level_name": occ.level_name,
-            "actor_name": occ.actor_name,
-            "unit_kind": occ.unit_kind,
-            "interact_type": occ.interact_type,
-            "interact_type_zh": occ.interact_type.as_deref().map(interact_type_zh),
-            "visible_condition": occ.visible_condition,
-            "location": occ.location.map(vec3_json),
-            "talk_events": talk_events_json,
-            "various_shop_id": various_shop_id,
-            "shops": shops_json,
-            "is_inn": is_inn,
-            "inn_id": inn_id,
-            "inn_price": inn_price,
-        }));
+        placements_json.push(with_zh_fields(
+            json!({
+                "map_id": occ.map_id,
+                "unique_id": occ.unique_id,
+                "level_name": occ.level_name,
+                "actor_name": occ.actor_name,
+                "unit_kind": occ.unit_kind,
+                "interact_type": occ.interact_type,
+                "interact_type_zh": occ.interact_type.as_deref().map(interact_type_zh),
+                "visible_condition": occ.visible_condition,
+                "location": occ.location.map(vec3_json),
+                "talk_events": talk_events_json,
+                "various_shop_id": various_shop_id,
+                "shops": shops_json,
+                "is_inn": is_inn,
+                "inn_id": inn_id,
+                "inn_price": inn_price,
+            }),
+            &[("map_name", &occ_map_name)],
+        ));
     }
     if occurrences.len() > 20 {
         lines.push(format!(
@@ -1223,14 +1349,16 @@ fn format_map_unit_npcs_output_db(
 
     Ok(tool_ok(
         lines.join("\n"),
-        json!({
-            "map_unit_id": map_unit_id,
-            "name": name_raw,
-            "name_zh": name_zh,
-            "map_id_filter": map_id_filter,
-            "placement_count": placements_json.len(),
-            "placements": placements_json,
-        }),
+        with_zh_fields(
+            json!({
+                "map_unit_id": map_unit_id,
+                "name": name_raw,
+                "map_id_filter": map_id_filter,
+                "placement_count": placements_json.len(),
+                "placements": placements_json,
+            }),
+            &[("name_zh", &name_zh)],
+        ),
     ))
 }
 
@@ -1277,13 +1405,16 @@ pub(crate) fn handle_read_talk_db(
                             let uname = m
                                 .unit
                                 .as_ref()
-                                .and_then(|u| resolve_db_zh_clean(&db, &u.name));
-                            json!({
-                                "unit_id": m.unit_id,
-                                "name": uname,
-                                "level": m.unit.as_ref().map(|u| u.level),
-                                "is_boss": m.unit.as_ref().map(|u| u.is_boss),
-                            })
+                                .map(|u| resolve_db_zh_text_clean(&db, &u.name))
+                                .unwrap_or_default();
+                            with_zh_fields(
+                                json!({
+                                    "unit_id": m.unit_id,
+                                    "level": m.unit.as_ref().map(|u| u.level),
+                                    "is_boss": m.unit.as_ref().map(|u| u.is_boss),
+                                }),
+                                &[("name", &uname)],
+                            )
                         })
                         .collect();
                     Some(json!({
@@ -1358,9 +1489,14 @@ pub(crate) fn handle_read_talk_db(
                 .iter()
                 .map(|m| {
                     let uid = m["unit_id"].as_i64().unwrap_or(-1);
-                    match m["name"].as_str() {
-                        Some(n) => format!("{n}(#{uid})"),
-                        None => format!("#{uid}"),
+                    if let Some(n) = m["name"].as_str() {
+                        format!("{n}(#{uid})")
+                    } else if m["name_untranslated"] == Value::Bool(true)
+                        && let Some(ja) = m["name_ja"].as_str()
+                    {
+                        format!("#{uid}{}", ZhText::format_untranslated(ja))
+                    } else {
+                        format!("#{uid}")
                     }
                 })
                 .collect();
@@ -1439,8 +1575,13 @@ pub(crate) fn handle_read_talk_db(
         summary.push("- 台词：".to_owned());
     }
     for (idx, line) in talk_lines.iter().enumerate() {
-        let clean_text = line.text.as_deref().and_then(collapse_ws);
-        let text_display = clean_text.as_deref().unwrap_or("（无中文译文）");
+        let line_text = resolve_db_text_key_clean(
+            &db,
+            line.text.as_deref(),
+            line.text_ns.as_deref(),
+            line.text_key.as_deref(),
+        );
+        let text_display = line_text.inline_or("（无中文译文）");
         let speaker_display =
             if line.speaker.is_empty() || line.speaker.eq_ignore_ascii_case("None") {
                 "旁白"
@@ -1448,15 +1589,17 @@ pub(crate) fn handle_read_talk_db(
                 line.speaker.as_str()
             };
         summary.push(format!("  {}. {speaker_display}：{text_display}", idx + 1));
-        lines_json.push(json!({
-            "ord": line.ord,
-            "row_key": line.row_key,
-            "talk_id": line.talk_id,
-            "speaker": line.speaker,
-            "emotion": line.emotion,
-            "text": clean_text,
-            "voice": (!line.voice.is_empty()).then_some(&line.voice),
-        }));
+        lines_json.push(with_zh_fields(
+            json!({
+                "ord": line.ord,
+                "row_key": line.row_key,
+                "talk_id": line.talk_id,
+                "speaker": line.speaker,
+                "emotion": line.emotion,
+                "voice": (!line.voice.is_empty()).then_some(&line.voice),
+            }),
+            &[("text", &line_text)],
+        ));
     }
 
     Ok(tool_ok(
@@ -1630,7 +1773,7 @@ pub(crate) async fn handle_whats_near_db(
         .map(map_id)
         .map_err(|err| format!("查询地图 {map_id} 失败：{err}"))?
         .ok_or_else(|| format!("参数 `map_id` 找不到编号为 {map_id} 的地图"))?;
-    let map_name = resolve_db_zh_clean(&db, &map.name);
+    let map_name = resolve_db_zh_text_clean(&db, &map.name);
 
     let mut db_kinds: Vec<LevelObjectKind> = Vec::new();
     for &k in &kinds {
@@ -1686,10 +1829,10 @@ pub(crate) async fn handle_whats_near_db(
         }
     }
 
-    let mut map_names_cache: HashMap<i64, Option<String>> = HashMap::new();
-    let mut item_names_cache: HashMap<i64, Option<String>> = HashMap::new();
+    let mut map_names_cache: HashMap<i64, ZhText> = HashMap::new();
+    let mut item_names_cache: HashMap<i64, ZhText> = HashMap::new();
     let mut map_units_cache: HashMap<i64, Option<MapUnit>> = HashMap::new();
-    let mut shop_names_cache: HashMap<i64, Option<String>> = HashMap::new();
+    let mut shop_names_cache: HashMap<i64, ZhText> = HashMap::new();
     let mut inn_prices_cache: HashMap<i64, Option<i64>> = HashMap::new();
 
     struct NearEntry {
@@ -1743,8 +1886,8 @@ pub(crate) async fn handle_whats_near_db(
                     .and_then(|list| list.first())
                     .is_some_and(|s| s.is_various_shop);
                 let shop_name = match shop_id {
-                    Some(sid) => cached_shop_name(&db, sid, &mut shop_names_cache)?,
-                    None => None,
+                    Some(sid) => cached_shop_name_zh(&db, sid, &mut shop_names_cache)?,
+                    None => ZhText::Missing,
                 };
                 let inn_id = actor_inns
                     .and_then(|list| list.first())
@@ -1755,7 +1898,12 @@ pub(crate) async fn handle_whats_near_db(
                     None => None,
                 };
 
-                let npc_name_zh = mu_rec.as_ref().and_then(|r| r.name_zh.clone());
+                let npc_name_zh = resolve_db_map_unit_name_zh(
+                    &db,
+                    mu_rec.as_ref().and_then(|r| r.name_zh.as_deref()),
+                    mu_rec.as_ref(),
+                    mu.map_unit_id,
+                );
                 let npc_name_raw = mu_rec.as_ref().map(|r| r.name.clone());
                 let interact_type = mu
                     .interact_type
@@ -1766,7 +1914,7 @@ pub(crate) async fn handle_whats_near_db(
 
                 let name_label = format_npc_short_label(
                     obj.unique_id,
-                    npc_name_zh.as_deref(),
+                    &npc_name_zh,
                     npc_name_raw.as_deref(),
                     interact_type.as_deref(),
                 );
@@ -1800,28 +1948,29 @@ pub(crate) async fn handle_whats_near_db(
                     summary_line: format!(
                         "- [NPC] {proximity_label}：{name_label}{extra_str}，坐标 {pos_str}"
                     ),
-                    json: json!({
-                        "kind": NearKind::Npc.as_str(),
-                        "kind_zh": NearKind::Npc.label_zh(),
-                        "distance": hit.distance,
-                        "direction_zh": dir_zh,
-                        "direction": dir_code,
-                        "bearing_deg": bearing_deg,
-                        "unique_id": obj.unique_id,
-                        "map_unit_id": mu.map_unit_id,
-                        "name": npc_name_raw,
-                        "name_zh": npc_name_zh,
-                        "unit_kind": mu.kind,
-                        "interact_type": interact_type,
-                        "interact_type_zh": interact_zh,
-                        "shop_id": shop_id,
-                        "shop_name": shop_name,
-                        "is_various_shop": is_various_shop,
-                        "inn_id": inn_id,
-                        "inn_price": inn_price,
-                        "visible_condition": obj.visible_condition,
-                        "location": loc.map(vec3_json),
-                    }),
+                    json: with_zh_fields(
+                        json!({
+                            "kind": NearKind::Npc.as_str(),
+                            "kind_zh": NearKind::Npc.label_zh(),
+                            "distance": hit.distance,
+                            "direction_zh": dir_zh,
+                            "direction": dir_code,
+                            "bearing_deg": bearing_deg,
+                            "unique_id": obj.unique_id,
+                            "map_unit_id": mu.map_unit_id,
+                            "name": npc_name_raw,
+                            "unit_kind": mu.kind,
+                            "interact_type": interact_type,
+                            "interact_type_zh": interact_zh,
+                            "shop_id": shop_id,
+                            "is_various_shop": is_various_shop,
+                            "inn_id": inn_id,
+                            "inn_price": inn_price,
+                            "visible_condition": obj.visible_condition,
+                            "location": loc.map(vec3_json),
+                        }),
+                        &[("name_zh", &npc_name_zh), ("shop_name", &shop_name)],
+                    ),
                 });
             }
             LevelObjectData::Shop(sh) => {
@@ -1830,11 +1979,8 @@ pub(crate) async fn handle_whats_near_db(
                 {
                     continue;
                 }
-                let shop_name = cached_shop_name(&db, sh.shop_id, &mut shop_names_cache)?;
-                let shop_label = match &shop_name {
-                    Some(n) => format!("商店 #{}「{n}」", sh.shop_id),
-                    None => format!("商店 #{}", sh.shop_id),
-                };
+                let shop_name = cached_shop_name_zh(&db, sh.shop_id, &mut shop_names_cache)?;
+                let shop_label = format!("商店 #{}{}", sh.shop_id, shop_name.bracketed_or_empty());
                 entries.push(NearEntry {
                     distance: hit.distance,
                     kind: NearKind::Npc,
@@ -1844,23 +1990,25 @@ pub(crate) async fn handle_whats_near_db(
                         obj.unique_id
                             .map_or_else(|| "?".to_owned(), |id| id.to_string())
                     ),
-                    json: json!({
-                        "kind": NearKind::Npc.as_str(),
-                        "kind_zh": NearKind::Npc.label_zh(),
-                        "distance": hit.distance,
-                        "direction_zh": dir_zh,
-                        "direction": dir_code,
-                        "bearing_deg": bearing_deg,
-                        "unique_id": obj.unique_id,
-                        "map_unit_id": sh.map_unit_id,
-                        "shop_id": sh.shop_id,
-                        "shop_name": shop_name,
-                        "is_various_shop": sh.is_various_shop,
-                        "interact_type": sh.interact_type,
-                        "interact_type_zh": sh.interact_type.as_deref().map(interact_type_zh),
-                        "visible_condition": obj.visible_condition,
-                        "location": loc.map(vec3_json),
-                    }),
+                    json: with_zh_fields(
+                        json!({
+                            "kind": NearKind::Npc.as_str(),
+                            "kind_zh": NearKind::Npc.label_zh(),
+                            "distance": hit.distance,
+                            "direction_zh": dir_zh,
+                            "direction": dir_code,
+                            "bearing_deg": bearing_deg,
+                            "unique_id": obj.unique_id,
+                            "map_unit_id": sh.map_unit_id,
+                            "shop_id": sh.shop_id,
+                            "is_various_shop": sh.is_various_shop,
+                            "interact_type": sh.interact_type,
+                            "interact_type_zh": sh.interact_type.as_deref().map(interact_type_zh),
+                            "visible_condition": obj.visible_condition,
+                            "location": loc.map(vec3_json),
+                        }),
+                        &[("shop_name", &shop_name)],
+                    ),
                 });
             }
             LevelObjectData::Inn(inn) => {
@@ -1919,16 +2067,22 @@ pub(crate) async fn handle_whats_near_db(
                     .battle_group_id
                     .or_else(|| static_tb.as_ref().and_then(|s| s.battle_group_id));
                 let item_name = match item_id {
-                    Some(iid) => cached_item_name_clean(&db, iid, &mut item_names_cache)?,
-                    None => None,
+                    Some(iid) => cached_item_name_zh(&db, iid, &mut item_names_cache)?,
+                    None => ZhText::Missing,
                 };
 
                 let mut content_parts = Vec::new();
                 if let Some(iid) = item_id {
-                    let n = item_name.clone().unwrap_or_else(|| format!("道具 #{iid}"));
+                    let base = match &item_name {
+                        ZhText::Translated(n) => format!("{n}(#{iid})"),
+                        ZhText::Untranslated { ja } => {
+                            format!("道具 #{iid}{}", ZhText::format_untranslated(ja))
+                        }
+                        ZhText::Missing => format!("道具 #{iid}(#{iid})"),
+                    };
                     match item_num {
-                        Some(cnt) => content_parts.push(format!("{n}(#{iid})×{cnt}")),
-                        None => content_parts.push(format!("{n}(#{iid})")),
+                        Some(cnt) => content_parts.push(format!("{base}×{cnt}")),
+                        None => content_parts.push(base),
                     }
                 }
                 if let Some(g) = money {
@@ -1954,24 +2108,26 @@ pub(crate) async fn handle_whats_near_db(
                     summary_line: format!(
                         "- [宝箱] {proximity_label}：宝箱 {cid_tag}（{content_str}），坐标 {pos_str}"
                     ),
-                    json: json!({
-                        "kind": NearKind::Chest.as_str(),
-                        "kind_zh": NearKind::Chest.label_zh(),
-                        "distance": hit.distance,
-                        "direction_zh": dir_zh,
-                        "direction": dir_code,
-                        "bearing_deg": bearing_deg,
-                        "unique_id": obj.unique_id,
-                        "chest_id": tb.chest_id,
-                        "item_id": item_id,
-                        "item_name": item_name,
-                        "item_num": item_num,
-                        "money": money,
-                        "is_trap": is_trap,
-                        "battle_group_id": battle_group_id,
-                        "visible_condition": obj.visible_condition,
-                        "location": loc.map(vec3_json),
-                    }),
+                    json: with_zh_fields(
+                        json!({
+                            "kind": NearKind::Chest.as_str(),
+                            "kind_zh": NearKind::Chest.label_zh(),
+                            "distance": hit.distance,
+                            "direction_zh": dir_zh,
+                            "direction": dir_code,
+                            "bearing_deg": bearing_deg,
+                            "unique_id": obj.unique_id,
+                            "chest_id": tb.chest_id,
+                            "item_id": item_id,
+                            "item_num": item_num,
+                            "money": money,
+                            "is_trap": is_trap,
+                            "battle_group_id": battle_group_id,
+                            "visible_condition": obj.visible_condition,
+                            "location": loc.map(vec3_json),
+                        }),
+                        &[("item_name", &item_name)],
+                    ),
                 });
             }
             LevelObjectData::Transition(tr) => {
@@ -1979,22 +2135,24 @@ pub(crate) async fn handle_whats_near_db(
                 let mut targets_json = Vec::with_capacity(tr.targets.len());
                 for t in &tr.targets {
                     let tname = match t.target_map_id {
-                        Some(tid) => cached_map_name_clean(&db, tid, &mut map_names_cache)?,
-                        None => None,
+                        Some(tid) => cached_map_name_zh(&db, tid, &mut map_names_cache)?,
+                        None => ZhText::Missing,
                     };
                     if let Some(tid) = t.target_map_id {
-                        let lbl = format_map_id_label(tid, tname.as_deref());
+                        let lbl = format_map_ref_zh(tid, &tname);
                         if !target_labels.contains(&lbl) {
                             target_labels.push(lbl);
                         }
                     }
-                    targets_json.push(json!({
-                        "target_map_id": t.target_map_id,
-                        "target_map_name": tname,
-                        "target_point_id": t.target_point_id,
-                        "is_event_only": t.is_event_only,
-                        "condition": t.condition,
-                    }));
+                    targets_json.push(with_zh_fields(
+                        json!({
+                            "target_map_id": t.target_map_id,
+                            "target_point_id": t.target_point_id,
+                            "is_event_only": t.is_event_only,
+                            "condition": t.condition,
+                        }),
+                        &[("target_map_name", &tname)],
+                    ));
                 }
                 let dest_desc = if tr.is_same_map {
                     "同图传送".to_owned()
@@ -2030,14 +2188,13 @@ pub(crate) async fn handle_whats_near_db(
             LevelObjectData::SavePoint(sp) => {
                 let target_map_id = sp.target_map_id.or(sp.transition_map_id);
                 let target_map_name = match target_map_id {
-                    Some(tid) => cached_map_name_clean(&db, tid, &mut map_names_cache)?,
-                    None => None,
+                    Some(tid) => cached_map_name_zh(&db, tid, &mut map_names_cache)?,
+                    None => ZhText::Missing,
                 };
                 let tp_desc = match target_map_id {
-                    Some(tid) => format!(
-                        "（可传送至 {}）",
-                        format_map_id_label(tid, target_map_name.as_deref())
-                    ),
+                    Some(tid) => {
+                        format!("（可传送至 {}）", format_map_ref_zh(tid, &target_map_name))
+                    }
                     None if sp.is_teleport => "（可传送）".to_owned(),
                     None => String::new(),
                 };
@@ -2048,22 +2205,24 @@ pub(crate) async fn handle_whats_near_db(
                     summary_line: format!(
                         "- [存档点] {proximity_label}：存档点{tp_desc}，坐标 {pos_str}"
                     ),
-                    json: json!({
-                        "kind": NearKind::SavePoint.as_str(),
-                        "kind_zh": NearKind::SavePoint.label_zh(),
-                        "distance": hit.distance,
-                        "direction_zh": dir_zh,
-                        "direction": dir_code,
-                        "bearing_deg": bearing_deg,
-                        "unique_id": obj.unique_id,
-                        "save_point_type": sp.save_point_type,
-                        "is_teleport": sp.is_teleport,
-                        "target_map_id": target_map_id,
-                        "target_map_name": target_map_name,
-                        "target_point_id": sp.target_point_id.or(sp.transition_point_id),
-                        "visible_condition": obj.visible_condition,
-                        "location": loc.map(vec3_json),
-                    }),
+                    json: with_zh_fields(
+                        json!({
+                            "kind": NearKind::SavePoint.as_str(),
+                            "kind_zh": NearKind::SavePoint.label_zh(),
+                            "distance": hit.distance,
+                            "direction_zh": dir_zh,
+                            "direction": dir_code,
+                            "bearing_deg": bearing_deg,
+                            "unique_id": obj.unique_id,
+                            "save_point_type": sp.save_point_type,
+                            "is_teleport": sp.is_teleport,
+                            "target_map_id": target_map_id,
+                            "target_point_id": sp.target_point_id.or(sp.transition_point_id),
+                            "visible_condition": obj.visible_condition,
+                            "location": loc.map(vec3_json),
+                        }),
+                        &[("target_map_name", &target_map_name)],
+                    ),
                 });
             }
             LevelObjectData::EventTrigger(et) => {
@@ -2162,7 +2321,7 @@ pub(crate) async fn handle_whats_near_db(
         "mixed" => "部分来自文件桥",
         _ => "来自显式参数",
     };
-    let map_label = format_map_id_label(map_id, map_name.as_deref());
+    let map_label = format_map_ref_zh(map_id, &map_name);
 
     let mut summary_lines = vec![format!(
         "{map_label} 坐标 {origin_str}（{source_zh}）半径 {radius:.0} 内共找到 {} 个对象（按距离排序；方向按 +X 为北推算，未经真机核对）：",
@@ -2192,16 +2351,18 @@ pub(crate) async fn handle_whats_near_db(
 
     Ok(tool_ok(
         summary_lines.join("\n"),
-        json!({
-            "map_id": map_id,
-            "map_name": map_name,
-            "position_source": position_source,
-            "origin": origin_json,
-            "radius": radius,
-            "kinds": kind_names,
-            "count": items_json.len(),
-            "items": items_json,
-        }),
+        with_zh_fields(
+            json!({
+                "map_id": map_id,
+                "position_source": position_source,
+                "origin": origin_json,
+                "radius": radius,
+                "kinds": kind_names,
+                "count": items_json.len(),
+                "items": items_json,
+            }),
+            &[("map_name", &map_name)],
+        ),
     ))
 }
 
@@ -2489,13 +2650,6 @@ pub(crate) fn map_direction_enum_zh(raw: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn format_map_id_label(map_id: i64, name: Option<&str>) -> String {
-    match name {
-        Some(n) => format!("地图 #{map_id}「{n}」"),
-        None => format!("地图 #{map_id}"),
-    }
-}
-
 pub(crate) fn format_vec3_zh(v: Vec3) -> String {
     format!("({:.1}, {:.1}, {:.1})", v.x, v.y, v.z)
 }
@@ -2506,16 +2660,17 @@ pub(crate) fn vec3_json(v: Vec3) -> Value {
 
 fn format_npc_short_label(
     unique_id: Option<i64>,
-    name_zh: Option<&str>,
+    name_zh: &ZhText,
     name_raw: Option<&str>,
     interact_type: Option<&str>,
 ) -> String {
     let uid_part = unique_id.map_or_else(String::new, |id| format!("unique_id={id}"));
     let role_part = interact_type.map(interact_type_zh);
     let base = match (name_zh, name_raw) {
-        (Some(zh), _) => format!("NPC「{zh}」"),
-        (None, Some(raw)) => format!("NPC「{raw}」"),
-        (None, None) => "NPC".to_owned(),
+        (ZhText::Translated(zh), _) => format!("NPC「{zh}」"),
+        (ZhText::Untranslated { ja }, _) => format!("NPC{}", ZhText::format_untranslated(ja)),
+        (ZhText::Missing, Some(raw)) => format!("NPC「{raw}」"),
+        (ZhText::Missing, None) => "NPC".to_owned(),
     };
     let mut details = Vec::new();
     if !uid_part.is_empty() {
@@ -2564,20 +2719,89 @@ fn cached_map_unit(
     Ok(val)
 }
 
-fn cached_shop_name(
+fn cached_shop_name_zh(
     db: &GameDb,
     shop_id: i64,
-    cache: &mut HashMap<i64, Option<String>>,
-) -> Result<Option<String>, String> {
+    cache: &mut HashMap<i64, ZhText>,
+) -> Result<ZhText, String> {
     if let Some(hit) = cache.get(&shop_id) {
         return Ok(hit.clone());
     }
     let val = db
         .shop(shop_id)
         .map_err(|err| format!("查询商店 {shop_id} 失败：{err}"))?
-        .and_then(|s| s.name_zh);
+        .map(|s| resolve_db_zh_text_clean(db, &s.shop.name))
+        .unwrap_or_default();
     cache.insert(shop_id, val.clone());
     Ok(val)
+}
+
+fn resolve_opt_map_name_zh(
+    db: &GameDb,
+    map_id: i64,
+    prejoined_zh: Option<&str>,
+    cache: &mut HashMap<i64, ZhText>,
+) -> Result<ZhText, String> {
+    if let Some(clean) = prejoined_zh.and_then(collapse_ws) {
+        return Ok(ZhText::Translated(clean));
+    }
+    cached_map_name_zh(db, map_id, cache)
+}
+
+fn resolve_opt_shop_name_zh(
+    db: &GameDb,
+    shop_id: i64,
+    prejoined_zh: Option<&str>,
+    cache: &mut HashMap<i64, ZhText>,
+) -> Result<ZhText, String> {
+    if let Some(clean) = prejoined_zh.and_then(collapse_ws) {
+        return Ok(ZhText::Translated(clean));
+    }
+    cached_shop_name_zh(db, shop_id, cache)
+}
+
+fn resolve_opt_unit_name_zh(db: &GameDb, unit_id: i64, prejoined_zh: Option<&str>) -> ZhText {
+    if let Some(clean) = prejoined_zh.and_then(collapse_ws) {
+        return ZhText::Translated(clean);
+    }
+    if let Ok(fields) = db.unit_untranslated_fields(unit_id)
+        && let Some(hit) = fields
+            .into_iter()
+            .find(|f| f.field == "name" && f.lang == MODEL_LANGUAGE)
+        && let Some(clean_ja) = collapse_ws(&hit.value)
+    {
+        return ZhText::Untranslated { ja: clean_ja };
+    }
+    ZhText::Missing
+}
+
+fn resolve_opt_quest_name_zh(db: &GameDb, quest_id: i64, prejoined_zh: Option<&str>) -> ZhText {
+    if let Some(clean) = prejoined_zh.and_then(collapse_ws) {
+        return ZhText::Translated(clean);
+    }
+    if let Ok(fields) = db.quest_untranslated_fields(quest_id)
+        && let Some(hit) = fields
+            .into_iter()
+            .find(|f| f.field == "title" && f.lang == MODEL_LANGUAGE)
+        && let Some(clean_ja) = collapse_ws(&hit.value)
+    {
+        return ZhText::Untranslated { ja: clean_ja };
+    }
+    ZhText::Missing
+}
+
+fn resolve_opt_quest_board_name_zh(
+    db: &GameDb,
+    quest_id: i64,
+    prejoined_zh: Option<&str>,
+) -> ZhText {
+    if let Some(clean) = prejoined_zh.and_then(collapse_ws) {
+        return ZhText::Translated(clean);
+    }
+    if let Ok(Some(qb)) = db.quest_board(quest_id) {
+        return resolve_db_zh_text_clean(db, &qb.title);
+    }
+    ZhText::Missing
 }
 
 fn cached_inn_price(
@@ -2642,6 +2866,12 @@ pub(crate) fn collect_map_npcs_for_read_map(
             Some(id) => cached_map_unit(db, id, &mut mu_cache)?,
             None => None,
         };
+        let npc_name_zh = resolve_db_map_unit_name_zh(
+            db,
+            mu_rec.as_ref().and_then(|r| r.name_zh.as_deref()),
+            mu_rec.as_ref(),
+            mu.map_unit_id,
+        );
         let (shop_id, is_various_shop) = obj
             .unique_id
             .and_then(|uid| shop_by_uid.get(&uid).copied())
@@ -2650,20 +2880,22 @@ pub(crate) fn collect_map_npcs_for_read_map(
             .unique_id
             .and_then(|uid| inn_by_uid.get(&uid).copied())
             .or(mu.inn_id);
-        out.push(json!({
-            "unique_id": obj.unique_id,
-            "map_unit_id": mu.map_unit_id,
-            "name": mu_rec.as_ref().map(|r| &r.name),
-            "name_zh": mu_rec.as_ref().and_then(|r| r.name_zh.as_deref()),
-            "unit_kind": mu.kind,
-            "interact_type": mu.interact_type,
-            "interact_type_zh": mu.interact_type.as_deref().map(interact_type_zh),
-            "shop_id": shop_id,
-            "is_various_shop": is_various_shop,
-            "inn_id": inn_id,
-            "visible_condition": obj.visible_condition,
-            "location": obj.location.map(vec3_json),
-        }));
+        out.push(with_zh_fields(
+            json!({
+                "unique_id": obj.unique_id,
+                "map_unit_id": mu.map_unit_id,
+                "name": mu_rec.as_ref().map(|r| &r.name),
+                "unit_kind": mu.kind,
+                "interact_type": mu.interact_type,
+                "interact_type_zh": mu.interact_type.as_deref().map(interact_type_zh),
+                "shop_id": shop_id,
+                "is_various_shop": is_various_shop,
+                "inn_id": inn_id,
+                "visible_condition": obj.visible_condition,
+                "location": obj.location.map(vec3_json),
+            }),
+            &[("name_zh", &npc_name_zh)],
+        ));
     }
     Ok(out)
 }

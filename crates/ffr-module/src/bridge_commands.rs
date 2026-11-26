@@ -13,10 +13,10 @@ use serde_json::{Map, Value, json};
 
 use crate::data_cache::GameDataSource;
 use crate::state_tools::{
-    LookupCtx, extract_i64_list, extract_str_list, format_item_label, format_location,
-    format_map_label, format_play_time, item_category_zh, obj_array, obj_bool, obj_f64, obj_i64,
-    obj_object, obj_str,
+    LookupCtx, extract_i64_list, extract_str_list, format_location, format_map_label,
+    format_play_time, item_category_zh, obj_array, obj_bool, obj_f64, obj_i64, obj_object, obj_str,
 };
+use crate::text_format::{format_item_ref_zh, with_zh_fields};
 
 const INVENTORY_SUMMARY_LIMIT: usize = 50;
 const EVENT_FLAGS_SUMMARY_LIMIT: usize = 64;
@@ -327,21 +327,23 @@ async fn handle_read_inventory(
         };
         let num = obj_i64(entry, "num").unwrap_or(0);
         let item_meta = lookup.item(item_id);
-        let name = lookup.item_name(item_id);
+        let name = lookup.item_name_zh(item_id);
         let category_zh = item_meta.map(|it| item_category_zh(it.category));
 
         if idx < INVENTORY_SUMMARY_LIMIT {
-            let label = format_item_label(item_id, name.as_deref());
+            let label = format_item_ref_zh(item_id, &name);
             let cat_part = category_zh.map_or_else(String::new, |c| format!(" [{c}]"));
             item_lines.push(format!("- {label}{cat_part} ×{num}"));
         }
 
-        items_json.push(json!({
-            "item_id": item_id,
-            "name": name,
-            "category_zh": category_zh,
-            "num": num,
-        }));
+        items_json.push(with_zh_fields(
+            json!({
+                "item_id": item_id,
+                "category_zh": category_zh,
+                "num": num,
+            }),
+            &[("name", &name)],
+        ));
     }
 
     let eff_count = count.unwrap_or(items_json.len() as i64);

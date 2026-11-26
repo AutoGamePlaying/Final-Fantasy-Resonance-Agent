@@ -3,9 +3,10 @@
 use serde_json::{Map, Value, json};
 
 use crate::state_tools::{
-    LookupCtx, SectionOutput, extract_i64_list, format_item_label, format_map_label,
-    format_play_time, obj_array, obj_bool, obj_f64, obj_i64, obj_object, obj_str,
+    LookupCtx, SectionOutput, extract_i64_list, format_map_label, format_play_time, obj_array,
+    obj_bool, obj_f64, obj_i64, obj_object, obj_str,
 };
+use crate::text_format::{format_item_ref_zh, with_zh_fields};
 
 /// Render the `party` section from `data.party`, enriched with `ffr-data` units, items, maps,
 /// chapters, main scenario objectives, and quests.
@@ -77,21 +78,25 @@ pub(crate) fn render_party(
         let max_mp = obj_i64(m, "max_mp");
         let exp = obj_i64(m, "exp");
         let weapon_id = obj_i64(m, "weapon_id").filter(|&id| id >= 0);
-        let weapon_name = weapon_id.and_then(|id| lookup.item_name(id));
+        let weapon_name = weapon_id
+            .map(|id| lookup.item_name_zh(id))
+            .unwrap_or_default();
         let armor_id = obj_i64(m, "armor_id").filter(|&id| id >= 0);
-        let armor_name = armor_id.and_then(|id| lookup.item_name(id));
+        let armor_name = armor_id
+            .map(|id| lookup.item_name_zh(id))
+            .unwrap_or_default();
         let acc_ids = extract_i64_list(m.get("accessory_ids"));
         let accessories_json: Vec<Value> = acc_ids
             .iter()
             .map(|&id| {
-                json!({
-                    "item_id": id,
-                    "name": lookup.item_name(id),
-                })
+                let acc_name = lookup.item_name_zh(id);
+                with_zh_fields(json!({ "item_id": id }), &[("name", &acc_name)])
             })
             .collect();
         let vision_id = obj_i64(m, "vision_id").filter(|&id| id >= 0);
-        let vision_name = vision_id.and_then(|id| lookup.item_name(id));
+        let vision_name = vision_id
+            .map(|id| lookup.item_name_zh(id))
+            .unwrap_or_default();
         let join_status = obj_i64(m, "join_status");
         let stats = stats_map
             .and_then(|sm| sm.get(&unit_id.to_string()))
@@ -102,22 +107,13 @@ pub(crate) fn render_party(
         let mp_str = format_pair(mp, max_mp);
         let mut equip_parts = Vec::new();
         if let Some(wid) = weapon_id {
-            equip_parts.push(format!(
-                "武器：{}",
-                format_item_label(wid, weapon_name.as_deref())
-            ));
+            equip_parts.push(format!("武器：{}", format_item_ref_zh(wid, &weapon_name)));
         }
         if let Some(aid) = armor_id {
-            equip_parts.push(format!(
-                "防具：{}",
-                format_item_label(aid, armor_name.as_deref())
-            ));
+            equip_parts.push(format!("防具：{}", format_item_ref_zh(aid, &armor_name)));
         }
         if let Some(vid) = vision_id {
-            equip_parts.push(format!(
-                "幻兵：{}",
-                format_item_label(vid, vision_name.as_deref())
-            ));
+            equip_parts.push(format!("幻兵：{}", format_item_ref_zh(vid, &vision_name)));
         }
         let equip_suffix = if equip_parts.is_empty() {
             String::new()
@@ -128,25 +124,29 @@ pub(crate) fn render_party(
             "  - {name_display}（#{unit_id}）{lv_str}：HP {hp_str}，MP {mp_str}{equip_suffix}"
         ));
 
-        members_json.push(json!({
-            "unit_id": unit_id,
-            "name": name,
-            "level": level,
-            "hp": hp,
-            "max_hp": max_hp,
-            "mp": mp,
-            "max_mp": max_mp,
-            "exp": exp,
-            "weapon_id": weapon_id,
-            "weapon_name": weapon_name,
-            "armor_id": armor_id,
-            "armor_name": armor_name,
-            "accessories": accessories_json,
-            "vision_id": vision_id,
-            "vision_name": vision_name,
-            "join_status": join_status,
-            "stats": stats,
-        }));
+        members_json.push(with_zh_fields(
+            json!({
+                "unit_id": unit_id,
+                "name": name,
+                "level": level,
+                "hp": hp,
+                "max_hp": max_hp,
+                "mp": mp,
+                "max_mp": max_mp,
+                "exp": exp,
+                "weapon_id": weapon_id,
+                "armor_id": armor_id,
+                "accessories": accessories_json,
+                "vision_id": vision_id,
+                "join_status": join_status,
+                "stats": stats,
+            }),
+            &[
+                ("weapon_name", &weapon_name),
+                ("armor_name", &armor_name),
+                ("vision_name", &vision_name),
+            ],
+        ));
     }
 
     let guest_json = obj_i64(party, "guest_unit_id")
@@ -165,13 +165,16 @@ pub(crate) fn render_party(
             .filter_map(|entry| {
                 let obj = entry.as_object()?;
                 let item_id = obj_i64(obj, "item_id")?;
-                Some(json!({
-                    "item_id": item_id,
-                    "name": lookup.item_name(item_id),
-                    "before": obj_i64(obj, "before"),
-                    "after": obj_i64(obj, "after"),
-                    "delta": obj_i64(obj, "delta"),
-                }))
+                let item_name = lookup.item_name_zh(item_id);
+                Some(with_zh_fields(
+                    json!({
+                        "item_id": item_id,
+                        "before": obj_i64(obj, "before"),
+                        "after": obj_i64(obj, "after"),
+                        "delta": obj_i64(obj, "delta"),
+                    }),
+                    &[("name", &item_name)],
+                ))
             })
             .collect();
         json!({

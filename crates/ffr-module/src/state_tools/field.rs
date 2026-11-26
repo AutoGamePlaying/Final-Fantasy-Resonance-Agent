@@ -3,9 +3,10 @@
 use serde_json::{Map, Value, json};
 
 use crate::state_tools::{
-    LookupCtx, SectionOutput, extract_i64_list, format_item_label, format_location,
-    format_map_label, interact_type_zh, obj_array, obj_bool, obj_f64, obj_i64, obj_object, obj_str,
+    LookupCtx, SectionOutput, extract_i64_list, format_location, format_map_label,
+    interact_type_zh, obj_array, obj_bool, obj_f64, obj_i64, obj_object, obj_str,
 };
+use crate::text_format::{format_item_ref_zh, with_zh_fields};
 
 /// Render the `field` section (Chinese summary + structured JSON) from `data.field` and v0 fields.
 pub(crate) fn render_field(
@@ -72,7 +73,9 @@ pub(crate) fn render_field(
         let item_id = obj_i64(chest, "item_id").filter(|&id| id >= 0);
         let item_num = obj_i64(chest, "item_num").filter(|&n| n > 0);
         let money = obj_i64(chest, "money").filter(|&m| m > 0);
-        let item_name = item_id.and_then(|id| lookup.item_name(id));
+        let item_name = item_id
+            .map(|id| lookup.item_name_zh(id))
+            .unwrap_or_default();
         let static_box = map_id
             .zip(chest_id)
             .and_then(|(mid, cid)| lookup.treasure_box(mid, cid));
@@ -87,7 +90,7 @@ pub(crate) fn render_field(
         };
         let mut content_parts = Vec::new();
         if let Some(id) = item_id {
-            let label = format_item_label(id, item_name.as_deref());
+            let label = format_item_ref_zh(id, &item_name);
             match item_num {
                 Some(n) => content_parts.push(format!("{label}×{n}")),
                 None => content_parts.push(label),
@@ -109,18 +112,20 @@ pub(crate) fn render_field(
         };
         chest_labels.push(detail);
 
-        chests_json.push(json!({
-            "unique_id": unique_id,
-            "chest_id": chest_id,
-            "is_open": is_open,
-            "item_id": item_id,
-            "item_name": item_name,
-            "item_num": item_num,
-            "money": money,
-            "is_trap": is_trap,
-            "battle_group_id": battle_group_id,
-            "location": chest_loc.map(|(_, v)| v),
-        }));
+        chests_json.push(with_zh_fields(
+            json!({
+                "unique_id": unique_id,
+                "chest_id": chest_id,
+                "is_open": is_open,
+                "item_id": item_id,
+                "item_num": item_num,
+                "money": money,
+                "is_trap": is_trap,
+                "battle_group_id": battle_group_id,
+                "location": chest_loc.map(|(_, v)| v),
+            }),
+            &[("item_name", &item_name)],
+        ));
     }
 
     let save_points_raw = obj_array(field, "save_points").unwrap_or(&[]);
